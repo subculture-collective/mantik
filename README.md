@@ -119,7 +119,8 @@ The background workers are off by default. Each is a `mantik serve` flag:
 | `--automatic-paper-retention` | Archives and retires sealed decisions and outcomes and rotates feed sources at half of each working limit ([reference](docs/reference/paper-record-archives.md#automatic-retention)) |
 
 Retention does not cover assessments or decision reviews; they keep their
-working limits. No worker grants admission, execution or qualification.
+working limits. The retention worker grants no admission, execution or
+qualification authority.
 
 ## Deploy
 
