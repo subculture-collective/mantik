@@ -1,7 +1,9 @@
 -- Retirement owner: a decision or outcome leaves the active working set only
 -- at the current paper archive epoch, only when that archive seals its exact
 -- creation pin, and only before a custody checkpoint binds that epoch. The
--- creation pin stays immutable; rows are never deleted.
+-- active row must already be removed in the same transaction, so a retired
+-- owner never remains in a working table. The creation pin stays immutable;
+-- epoch rows are never deleted.
 CREATE OR REPLACE FUNCTION mantik_retire_paper_epoch() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE head bigint; bound bigint;
 BEGIN
@@ -16,6 +18,8 @@ BEGIN
     SELECT (convert_from(header,'UTF8')::jsonb->>'paper_archive_sequence')::bigint INTO bound
     FROM mantik_paper_feed_checkpoints ORDER BY sequence DESC LIMIT 1;
     IF OLD.kind NOT IN ('decision','outcome') OR NEW.retired_epoch<>head OR coalesce(bound,0)>=head OR
+       OLD.kind='decision' AND EXISTS(SELECT 1 FROM mantik_paper_decisions WHERE id=OLD.record_id) OR
+       OLD.kind='outcome' AND EXISTS(SELECT 1 FROM mantik_paper_outcomes WHERE id=OLD.record_id) OR
        NOT EXISTS(SELECT 1 FROM mantik_paper_archive_members m
                   WHERE m.archive_sequence=head AND m.kind=OLD.kind AND m.record_id=OLD.record_id AND
                         m.created_epoch=OLD.created_epoch AND m.record_sha256=OLD.record_sha256) THEN

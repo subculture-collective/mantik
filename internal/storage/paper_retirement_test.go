@@ -121,6 +121,12 @@ func paperRetirementContract(t *testing.T, s paperTargetBackend) {
 
 	decide("third")
 	second := archive(2, 3)
+	if p, ok := s.(*Postgres); ok {
+		// Sealed and unbound, but the active row is still in its table.
+		if _, err := p.pool.Exec(ctx, "UPDATE mantik_paper_record_epochs SET retired_epoch=2 WHERE kind='decision' AND record_id='old'"); err == nil {
+			t.Fatal("schema guard retired a record that is still active")
+		}
+	}
 	r := retire("sealed records", 2, 2, 1, PaperRetirementRetained{NewestDecision: 1})
 	if r.ArchiveSHA256 != second.SHA256 || r.Retired[0].Kind != "decision" || r.Retired[0].ID != "newer" || r.Retired[1].ID != "old" || r.Retired[2].Kind != "outcome" || r.Retired[2].ID != "old-outcome" {
 		t.Fatal("retired pins", r.Retired)

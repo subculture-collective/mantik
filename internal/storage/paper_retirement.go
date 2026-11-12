@@ -350,15 +350,6 @@ func (p *Postgres) RetirePaperRecords(ctx context.Context, owner string, de Pape
 			outcomes = append(outcomes, pin.ID)
 		}
 	}
-	// The schema guard rechecks each row: unretired, sealed by the head
-	// archive with this creation pin, and no custody checkpoint at the epoch.
-	tag, err := tx.Exec(ctx, "UPDATE mantik_paper_record_epochs e SET retired_epoch=$1 FROM unnest($2::text[],$3::text[]) AS w(kind,id) WHERE e.kind=w.kind AND e.record_id=w.id AND e.retired_epoch IS NULL", head, kinds, ids)
-	if err != nil {
-		return PaperRetirementReceipt{}, err
-	}
-	if tag.RowsAffected() != int64(len(pins)) {
-		return PaperRetirementReceipt{}, ErrPaperRetirementConflict
-	}
 	for table, removed := range map[string][]string{"mantik_paper_outcomes": outcomes, "mantik_paper_decisions": decisions} {
 		tag, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE id=ANY($1::text[])", removed)
 		if err != nil {
@@ -367,6 +358,16 @@ func (p *Postgres) RetirePaperRecords(ctx context.Context, owner string, de Pape
 		if tag.RowsAffected() != int64(len(removed)) {
 			return PaperRetirementReceipt{}, ErrPaperRetirementConflict
 		}
+	}
+	// The schema guard rechecks each row: unretired, sealed by the head
+	// archive with this creation pin, already removed from its working table,
+	// and no custody checkpoint at the epoch.
+	tag, err := tx.Exec(ctx, "UPDATE mantik_paper_record_epochs e SET retired_epoch=$1 FROM unnest($2::text[],$3::text[]) AS w(kind,id) WHERE e.kind=w.kind AND e.record_id=w.id AND e.retired_epoch IS NULL", head, kinds, ids)
+	if err != nil {
+		return PaperRetirementReceipt{}, err
+	}
+	if tag.RowsAffected() != int64(len(pins)) {
+		return PaperRetirementReceipt{}, ErrPaperRetirementConflict
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return PaperRetirementReceipt{}, err

@@ -225,8 +225,8 @@ the same collector, state and receiver locks as the paper archive. In
 PostgreSQL the `mantik_immutable_paper_epochs` trigger still rejects deletes
 and every other change to an epoch row. It accepts one change: setting
 `retired_epoch` once, to the current archive sequence, for a decision or outcome
-whose creation pin is a member of that archive, while no custody checkpoint
-binds that epoch. Assessments and decision reviews do not retire yet.
+whose creation pin is a member of that archive and whose active row the same
+transaction already removed, while no custody checkpoint binds that epoch. Assessments and decision reviews do not retire yet.
 
 Private source-custody views use the same owner scope. Working reads load seals
 only for actual active decision/outcome IDs; historical checkpoint inspection
