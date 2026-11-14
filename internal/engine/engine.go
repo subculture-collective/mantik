@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -120,7 +121,7 @@ type Result struct {
 type session struct {
 	date string
 	day  time.Time
-	at   time.Time // decision time: when the session's last bar became available
+	at   time.Time // decision time: 16:30 New York on the session date
 }
 
 type bar struct{ open, close *big.Rat }
@@ -166,7 +167,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// decision times.
 	bars := map[string]map[string]bar{}
 	actions := map[string][]action{}
-	decided := map[string]time.Time{}
+	dates := map[string]bool{}
 	for _, a := range assets {
 		s, err := cfg.Source.AdjustedBars(ctx, a, cfg.End)
 		if err != nil {
@@ -180,18 +181,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				return Result{}, fmt.Errorf("%s bar %s has an invalid raw price", a, b.Date)
 			}
 			bars[a][b.Date] = bar{o, c}
-			if at := b.Raw.AvailableAt; at.After(decided[b.Date]) {
-				decided[b.Date] = at
-			}
+			dates[b.Date] = true
 		}
 		if actions[a], err = parseActions(s.Applied); err != nil {
 			return Result{}, fmt.Errorf("actions for %s: %w", a, err)
 		}
 	}
 	sessions := []session{}
-	for date, at := range decided {
-		if !at.Before(cfg.Start) && !at.After(cfg.End) {
-			day, _ := time.Parse(time.DateOnly, date)
+	for date := range dates {
+		day, _ := time.Parse(time.DateOnly, date)
+		if at := decisionTime(day); !at.Before(cfg.Start) && !at.After(cfg.End) {
 			sessions = append(sessions, session{date: date, day: day, at: at})
 		}
 	}
@@ -201,7 +200,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	shares := map[string]*big.Rat{}
 	last := map[string]*big.Rat{} // last raw close seen per asset
 	pending := map[string]*big.Rat{}
-	decidedOn := ""
+	decidedOn, decidedAt := "", time.Time{}
 	dividends := []owed{}
 	var prior *time.Time
 	equity := new(big.Rat).Set(cash)
@@ -210,25 +209,26 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
-		// Corporate actions since the previous session: dividends on the
-		// shares held before the ex-date, then splits. Nothing is held before
-		// the first session.
-		gap := func(c action) bool { return prior != nil && c.ex.After(*prior) && !c.ex.After(s.day) }
+		// Corporate actions since the previous session, in ex-date order with
+		// dividends first on a shared date: a dividend is earned on the shares
+		// held before its ex-date, which includes any earlier split in the gap.
+		// Nothing is held before the first session.
 		for _, a := range assets {
 			for _, c := range actions[a] {
-				if held := shares[a]; held != nil && c.kind == "cash_dividend" && gap(c) {
-					dividends = append(dividends, owed{c.pay, new(big.Rat).Mul(held, c.amount)})
-				}
-			}
-			for _, c := range actions[a] {
-				if c.kind != "split" || !gap(c) {
+				if prior == nil || !c.ex.After(*prior) || c.ex.After(s.day) {
 					continue
 				}
-				if held := shares[a]; held != nil {
-					held.Mul(held, c.ratio)
-				}
-				if l := last[a]; l != nil {
-					l.Quo(l, c.ratio)
+				held := shares[a]
+				switch {
+				case c.kind == "cash_dividend" && held != nil:
+					dividends = append(dividends, owed{c.pay, new(big.Rat).Mul(held, c.amount)})
+				case c.kind == "split":
+					if held != nil {
+						held.Mul(held, c.ratio)
+					}
+					if l := last[a]; l != nil {
+						l.Quo(l, c.ratio)
+					}
 				}
 			}
 		}
@@ -254,6 +254,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 					}
 					open.Add(open, new(big.Rat).Mul(held, p))
 				}
+			}
+			if fillAt := openTime(s.day); !fillAt.After(decidedAt) {
+				return Result{}, fmt.Errorf("fill at %s is not after its decision at %s", fillAt, decidedAt)
 			}
 			for _, a := range assets {
 				w, want := pending[a]
@@ -336,7 +339,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				pending[t.Asset] = w
 			}
 			book.State = d.State
-			decidedOn, day.Decided = s.date, true
+			decidedOn, decidedAt, day.Decided = s.date, s.at, true
 		}
 		out.Days = append(out.Days, day)
 		p := s.day
@@ -388,8 +391,28 @@ func parseActions(in []marketdata.CorporateAction) ([]action, error) {
 		}
 		out = append(out, a)
 	}
-	slices.SortStableFunc(out, func(a, b action) int { return a.ex.Compare(b.ex) })
+	// Ex-date order, with dividends before splits on the same date.
+	slices.SortStableFunc(out, func(a, b action) int {
+		return cmp.Or(a.ex.Compare(b.ex), cmp.Compare(kindOrder(a.kind), kindOrder(b.kind)))
+	})
 	return out, nil
+}
+
+func kindOrder(kind string) int {
+	if kind == "cash_dividend" {
+		return 0
+	}
+	return 1
+}
+
+// decisionHour and decisionMinute set when a session's decision is made: 16:30 New York, half an
+// hour after the regular close and past the SIP feed's 15-minute embargo. A
+// fixed clock keeps decision times independent of later bar corrections. A bar
+// that becomes available after this time is not in that session's view.
+const decisionHour, decisionMinute = 16, 30
+
+func decisionTime(day time.Time) time.Time {
+	return time.Date(day.Year(), day.Month(), day.Day(), decisionHour, decisionMinute, 0, 0, newYork).UTC()
 }
 
 // openTime is the session's 09:30 New York open, when its fills happen.

@@ -17,15 +17,19 @@ trading later.
 | `Cost` | The cost model. |
 
 The engine reads each asset as of `End` to lay out sessions, raw prices and
-corporate actions. A session is a bar date; its decision time is when the last
-of that date's bars became available. The strategy itself only ever sees a
-view built as of its decision time.
+corporate actions. A session is a bar date. Its decision time is fixed at
+16:30 New York on that date, half an hour after the regular close and past the
+SIP feed's 15-minute embargo, so a later correction to a bar never moves a
+decision. A bar that becomes available after 16:30 is not in that session's
+view. The strategy itself only ever sees a view built as of its decision time,
+and every fill happens after the decision it carries out.
 
 ## Each session
 
 1. **Corporate actions** that went ex since the previous session apply to the
-   holdings: the shares held before the ex-date earn each dividend, then
-   splits multiply the shares.
+   holdings in ex-date order, dividends before splits on a shared date. A
+   dividend is earned on the shares held before its ex-date, including any
+   earlier split between the two sessions.
 2. **Dividends** whose pay date has arrived are added to cash.
 3. **Fills.** The previous session's decision fills at this session's raw
    open. Each asset's target shares are its weight times the equity at the
