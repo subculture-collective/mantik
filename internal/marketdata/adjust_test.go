@@ -187,3 +187,38 @@ func TestAdjustRejectsBadActionsAndBars(t *testing.T) {
 		t.Error("another asset's bars")
 	}
 }
+
+func TestKnownPostponementWithdrawsTheEarlierExDate(t *testing.T) {
+	postponed := split
+	postponed.ExDate, postponed.KnownAt = "2026-01-15", at(8, 0, 0)
+	s, err := Read(context.Background(), barsStore(t), asset, []CorporateAction{split, postponed}, at(10, 0, 0))
+	if err != nil || len(s.Applied) != 0 || s.Bars[0].Close != "100" {
+		t.Fatal("obsolete ex-date applied", closes(s), s.Applied, err)
+	}
+	// Before the postponement was known, the original date applied.
+	s, err = Read(context.Background(), barsStore(t), asset, []CorporateAction{split, postponed}, at(7, 22, 0))
+	if err != nil || len(s.Applied) != 1 || s.Bars[0].Close != "50" {
+		t.Fatal("original split missing", closes(s), err)
+	}
+}
+
+func TestActionsInABarGapApplyInExDateOrder(t *testing.T) {
+	bars := []storage.DailyBar{
+		{AssetID: asset, Date: "2026-01-05", Open: "100", High: "100", Low: "100", Close: "100", VWAP: "100", Volume: 10},
+		{AssetID: asset, Date: "2026-01-08", Open: "49", High: "49", Low: "49", Close: "49", VWAP: "49", Volume: 20},
+	}
+	known := at(1, 0, 0)
+	actions := []CorporateAction{
+		{SourceID: "d", Kind: "cash_dividend", ExDate: "2026-01-07", PayDate: "2026-01-08", Amount: "1", KnownAt: known},
+		{SourceID: "s", Kind: "split", ExDate: "2026-01-06", From: "1", To: "2", KnownAt: known},
+	}
+	s, err := Adjust(asset, bars, actions, at(9, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two post-split shares earn $2, reinvested at 49: (2 + 2/49) * 49 / 100.
+	// The dividend's prior close in its basis is 50: 100 * (1 - 1/50) / 2.
+	if s.Bars[1].TotalReturn != "1" || s.Bars[0].Close != "49" {
+		t.Fatalf("%+v", s.Bars)
+	}
+}

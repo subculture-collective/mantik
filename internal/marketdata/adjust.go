@@ -152,7 +152,8 @@ func Adjust(assetID string, raw []storage.DailyBar, actions []CorporateAction, a
 	// Back-adjustment: a bar before an ex-date is scaled by every later action.
 	// A split scales prices by From/To and volume by To/From. A dividend scales
 	// prices by 1 - amount/close, using the raw close of the last bar before
-	// its ex-date, which is in the same share basis as the amount.
+	// its ex-date put in the dividend's share basis: scaled by any split that
+	// went ex after that bar and before the dividend.
 	price := make([]*big.Rat, len(bars))
 	volume := make([]*big.Rat, len(bars))
 	pf, vf := big.NewRat(1, 1), big.NewRat(1, 1)
@@ -166,7 +167,13 @@ func Adjust(assetID string, raw []storage.DailyBar, actions []CorporateAction, a
 				vf.Mul(vf, a.ratio)
 			case "cash_dividend":
 				// bars[i] is the last bar before this ex-date.
-				f := new(big.Rat).Quo(a.amount, bars[i].close)
+				basis := new(big.Rat).Set(bars[i].close)
+				for _, s := range applied[:next] {
+					if s.Kind == "split" && s.ex.After(bars[i].day) && s.ex.Before(a.ex) {
+						basis.Quo(basis, s.ratio)
+					}
+				}
+				f := new(big.Rat).Quo(a.amount, basis)
 				if f.Cmp(big.NewRat(1, 1)) >= 0 {
 					return Series{}, fmt.Errorf("%w: dividend %s is not below the prior close", ErrInvalidAction, a.SourceID)
 				}
@@ -196,15 +203,14 @@ func Adjust(assetID string, raw []storage.DailyBar, actions []CorporateAction, a
 		for first < len(applied) && !applied[first].ex.After(b.day) {
 			first++
 		}
-		// Dividends go first: their amount is per share held before the
-		// ex-date, so a split on the same ex-date must not scale them.
+		// Actions since the previous bar, in ex-date order. On one ex-date
+		// dividends sort before splits: their amount is per share held before
+		// the ex-date, so a split on the same date must not scale them.
 		for _, a := range applied[start:first] {
-			if a.Kind == "cash_dividend" {
+			switch a.Kind {
+			case "cash_dividend":
 				owed = append(owed, pending{a.pay, new(big.Rat).Mul(shares, a.amount)})
-			}
-		}
-		for _, a := range applied[start:first] {
-			if a.Kind == "split" {
+			case "split":
 				shares.Mul(shares, a.ratio)
 			}
 		}
@@ -248,7 +254,7 @@ func known(actions []CorporateAction, asOf time.Time) ([]action, error) {
 		if err != nil {
 			return nil, fmt.Errorf("action %d: %w", i, err)
 		}
-		if a.KnownAt.After(asOf) || a.ex.After(today) {
+		if a.KnownAt.After(asOf) {
 			continue
 		}
 		if prior, ok := latest[a.SourceID]; ok {
@@ -261,12 +267,22 @@ func known(actions []CorporateAction, asOf time.Time) ([]action, error) {
 		}
 		latest[a.SourceID] = a
 	}
+	// The ex-date is checked on the selected version, so a known correction
+	// that postpones an action also withdraws its earlier date.
 	out := make([]action, 0, len(latest))
 	for _, a := range latest {
-		out = append(out, a)
+		if !a.ex.After(today) {
+			out = append(out, a)
+		}
+	}
+	dividendFirst := func(kind string) int {
+		if kind == "cash_dividend" {
+			return 0
+		}
+		return 1
 	}
 	slices.SortFunc(out, func(a, b action) int {
-		return cmp.Or(a.ex.Compare(b.ex), cmp.Compare(a.SourceID, b.SourceID))
+		return cmp.Or(a.ex.Compare(b.ex), cmp.Compare(dividendFirst(a.Kind), dividendFirst(b.Kind)), cmp.Compare(a.SourceID, b.SourceID))
 	})
 	return out, nil
 }

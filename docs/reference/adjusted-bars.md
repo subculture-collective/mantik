@@ -22,8 +22,10 @@ action that became known later than its ex-date is left out of reads before
 it became known, so a read as of a past clock returns what Mantik could have
 computed then.
 
-When one source ID has several versions, the read uses the latest version
-known at `asOf`. Two different versions known at the same time fail the read.
+When one source ID has several versions, the read first picks the latest
+version known at `asOf`, then checks that version's ex-date. A known correction
+that postpones an action therefore withdraws its earlier date. Two different
+versions known at the same time fail the read.
 
 ## Actions
 
@@ -47,8 +49,9 @@ which puts every bar in the share basis of the read clock:
 - A split scales open, high, low, close and VWAP by `From/To` and volume by
   `To/From`.
 - A dividend scales the prices by `1 - Amount/C`, where `C` is the raw close
-  of the last bar before the ex-date. A dividend at or above that close fails
-  with `ErrInvalidAction`.
+  of the last bar before the ex-date, scaled by any split that went ex between
+  that bar and the dividend. A dividend at or above `C` fails with
+  `ErrInvalidAction`.
 
 Volume carries only split adjustment. Values are computed exactly with
 rational arithmetic and rounded to 12 decimal places, half away from zero, when
@@ -59,6 +62,8 @@ they are rendered. Each adjusted bar keeps its raw bar.
 `TotalReturn` on each bar is the value at that bar's close of one share bought
 at the first bar's close, as a multiple of the cost:
 
+- Actions apply in ex-date order, including several that fall between two
+  stored bars.
 - On an ex-date, the shares held before it earn the dividend. A split on the
   same ex-date does not change that amount, because it is per share held
   before the ex-date.
