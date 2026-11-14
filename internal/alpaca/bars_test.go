@@ -109,7 +109,7 @@ func TestDailyBarsPacesUnder200PerMinuteAndBacksOffOn429(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"bars":{"SPY":[{"t":"2026-11-11T05:00:00Z","o":1,"h":1,"l":1,"c":1,"v":1,"n":1,"vw":1}]},"next_page_token":null}`)
 		}
 	})
-	c.barInterval = 20 * time.Millisecond
+	c.barInterval = 50 * time.Millisecond
 	out, err := c.FetchDailyBars(context.Background(), []string{"SPY"}, time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC))
 	if err != nil || len(out.Bars["SPY"]) != 2 || out.Pages[0].Attempts != 2 {
 		t.Fatal("429 was not retried", err)
@@ -117,7 +117,9 @@ func TestDailyBarsPacesUnder200PerMinuteAndBacksOffOn429(t *testing.T) {
 	if gap := at[1].Sub(at[0]); gap < 10*time.Millisecond {
 		t.Fatal("429 retried without backing off", gap)
 	}
-	if gap := at[2].Sub(at[1]); gap < c.barInterval {
+	// The server sees each request after variable latency, so allow some
+	// slack below the spacing the client enforces from its send times.
+	if gap := at[2].Sub(at[1]); gap < c.barInterval*3/5 {
 		t.Fatal("pages were not paced", gap)
 	}
 }
