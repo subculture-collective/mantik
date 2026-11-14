@@ -65,12 +65,14 @@ scheduled after the last session's open is not applied.
 
 ## Returns
 
-A session's return is time-weighted: equity at the close over the previous
-session's equity plus that morning's deposits, minus one. Deposits arrive
-before the open, while nothing trades, so they are valued at the previous
-close. `TWR` chains the daily returns from the first session. A deposit
+A session's return is time-weighted and split at the open, where deposits
+arrive. The book is valued at the open before the deposits, using each held
+asset's open, or its last close if it has no bar. The return from the previous
+close to that value is chained with the return from that value plus the
+deposits to the close. `TWR` chains the daily returns from the first session. A deposit
 therefore never counts as profit: on a day when prices do not move, the
-return is zero with or without one. Dividends are income, not deposits, and do
+return is zero with or without one, and an overnight gap is not diluted by
+the deposit. Dividends are income, not deposits, and do
 count.
 
 ## Costs

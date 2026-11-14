@@ -147,3 +147,21 @@ func TestTimeWeightedReturnChainsDailyReturns(t *testing.T) {
 		t.Fatal("deposit changed the time-weighted return", a, b)
 	}
 }
+
+func TestDepositDoesNotDiluteTheOvernightReturn(t *testing.T) {
+	// Fully invested at 100 from January 7; Friday opens and closes at 110,
+	// the morning a $500 deposit arrives.
+	gap := [][2]string{{"100", "100"}, {"100", "100"}, {"100", "100"}, {"100", "100"}, {"110", "110"}}
+	with, err := Run(context.Background(), depositConfig(newSource(t, gap), &DefaultDeposits))
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, err := Run(context.Background(), depositConfig(newSource(t, gap), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, o := with.Days[len(with.Days)-1], without.Days[len(without.Days)-1]
+	if w.Deposited != "500" || w.Return != "0.1" || o.Return != "0.1" || w.TWR != o.TWR {
+		t.Fatalf("with %+v without %+v", w, o)
+	}
+}

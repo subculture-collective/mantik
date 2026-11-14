@@ -97,9 +97,10 @@ type Fill struct {
 }
 
 // Day is the book at one session's close. Deposited is the cash deposited
-// before this session's open. Return is the session's time-weighted return:
-// equity over the previous close plus the deposits, minus one. TWR chains the
-// returns from the start of the run, so deposits never count as profit.
+// before this session's open. Return is the session's time-weighted return,
+// split at the open: the previous close to the book's value at the open, then
+// that value plus the deposits to the close. TWR chains the returns from the
+// start of the run, so deposits never count as profit.
 type Day struct {
 	Date      string     `json:"date"`
 	DecidedAt time.Time  `json:"decided_at"`
@@ -271,21 +272,24 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			d.AppliedOn = s.date
 			out.Deposits = append(out.Deposits, d)
 		}
+		// The book's value at the open, before the deposits, priced with opens
+		// where available. It splits the session's return at the deposit.
+		atOpen := new(big.Rat).Set(cash)
+		for _, a := range assets {
+			if held := shares[a]; held != nil {
+				p := last[a]
+				if b, ok := bars[a][s.date]; ok {
+					p = b.open
+				}
+				atOpen.Add(atOpen, new(big.Rat).Mul(held, p))
+			}
+		}
 		cash.Add(cash, deposited)
 
-		// Fill the previous decision at this session's open. Size from equity
-		// at the open, priced with opens where available.
+		// Fill the previous decision at this session's open, sized from the
+		// equity at the open including the deposits.
 		if len(pending) > 0 {
-			open := new(big.Rat).Set(cash)
-			for _, a := range assets {
-				if held := shares[a]; held != nil {
-					p := last[a]
-					if b, ok := bars[a][s.date]; ok {
-						p = b.open
-					}
-					open.Add(open, new(big.Rat).Mul(held, p))
-				}
-			}
+			open := new(big.Rat).Add(atOpen, deposited)
 			if fillAt := openTime(s.day); !fillAt.After(decidedAt) {
 				return Result{}, fmt.Errorf("fill at %s is not after its decision at %s", fillAt, decidedAt)
 			}
@@ -336,10 +340,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				positions = append(positions, Position{Asset: a, Shares: render(held)})
 			}
 		}
-		ret := new(big.Rat)
-		if base := new(big.Rat).Add(equity, deposited); base.Sign() > 0 {
-			ret = quantize(ret.Sub(new(big.Rat).Quo(next, base), big.NewRat(1, 1)))
+		// Time-weighted: the return from the previous close to the open,
+		// before the deposits, chained with the return from the open, with the
+		// deposits, to the close.
+		growthToday := big.NewRat(1, 1)
+		if equity.Sign() > 0 {
+			growthToday.Quo(atOpen, equity)
 		}
+		if base := new(big.Rat).Add(atOpen, deposited); base.Sign() > 0 {
+			growthToday.Mul(growthToday, new(big.Rat).Quo(next, base))
+		}
+		ret := quantize(growthToday.Sub(growthToday, big.NewRat(1, 1)))
 		growth = quantize(growth.Mul(growth, new(big.Rat).Add(ret, big.NewRat(1, 1))))
 		equity = next
 		twr := new(big.Rat).Sub(growth, big.NewRat(1, 1))
