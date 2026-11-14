@@ -156,7 +156,9 @@ across the request's symbols.
   SHA-256 in request order, for the archive.
 - **Bars.** Each symbol's bars come back in strictly increasing time order.
   Prices and VWAP stay exact decimal text, because many are sub-cent. Volume
-  and trade count are integers. A page fails the whole call if it names a
+  and trade count are integers. A page must carry both the `bars` object and
+  `next_page_token`; an empty range is `{"bars":{},"next_page_token":null}`,
+  so `null`, `{}` or another object fails. A page fails the whole call if it names a
   symbol that was not requested, repeats or reorders a bar time, falls outside
   the range, or carries a zero, negative or exponent-form price.
 

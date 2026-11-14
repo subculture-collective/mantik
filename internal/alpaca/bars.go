@@ -170,6 +170,16 @@ type rawBar struct {
 // add validates one page and appends its bars. It returns the next page token,
 // or "" on the last page.
 func (d *DailyBars) add(raw string) (string, error) {
+	// An empty range is {"bars":{},"next_page_token":null}. Both keys must be
+	// present, so null, {} or an unrelated object is never read as no data.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope == nil {
+		return "", errors.New("response is not one bars object")
+	}
+	bars, token := envelope["bars"], envelope["next_page_token"]
+	if !strings.HasPrefix(string(bars), "{") || token == nil {
+		return "", errors.New("response lacks the bars envelope")
+	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	var page barsPage

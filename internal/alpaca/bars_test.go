@@ -136,6 +136,12 @@ func TestDailyBarsRejectsMalformedPages(t *testing.T) {
 		"empty token":        `{"bars":{},"next_page_token":""}`,
 		"trailing data":      `{"bars":{},"next_page_token":null}{}`,
 		"repeated token":     `{"bars":{},"next_page_token":"same"}`,
+		"null body":          `null`,
+		"empty object":       `{}`,
+		"unrelated object":   `{"message":"ok"}`,
+		"null bars":          `{"bars":null,"next_page_token":null}`,
+		"missing token":      `{"bars":{}}`,
+		"bars array":         `{"bars":[],"next_page_token":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := testClient(t, func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, body) })
