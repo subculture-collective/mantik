@@ -47,6 +47,19 @@ func (s leakySource) AdjustedBars(ctx context.Context, asset string, asOf time.T
 	return out, err
 }
 
+// reusingSource returns the same backing slice for every read.
+type reusingSource struct {
+	m   *storage.Memory
+	buf []marketdata.AdjustedBar
+}
+
+func (s *reusingSource) AdjustedBars(ctx context.Context, asset string, asOf time.Time) (marketdata.Series, error) {
+	out, err := marketdata.Read(ctx, s.m, asset, nil, asOf)
+	s.buf = append(s.buf[:0], out.Bars...)
+	out.Bars = s.buf
+	return out, err
+}
+
 type equal struct{ spec Spec }
 
 func (e equal) Spec() Spec { return e.spec }
@@ -81,6 +94,16 @@ func TestViewHoldsOnlyDataAvailableAtTheDecisionTime(t *testing.T) {
 	bars[0].Close = "999"
 	if v.Bars("asset-spy")[0].Close == "999" {
 		t.Fatal("view was mutable")
+	}
+	// A source that reuses its slice cannot change a built view.
+	src := &reusingSource{m: m}
+	v, err = Build(ctx, spec, src, at, []string{"asset-spy"}, Book{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.buf[0].Close = "999"
+	if v.Bars("asset-spy")[0].Close == "999" {
+		t.Fatal("view shared the source's slice")
 	}
 	if _, err := Build(ctx, spec, leakySource{m}, at, []string{"asset-spy"}, Book{}); !errors.Is(err, ErrFutureData) {
 		t.Fatal("future bar admitted", err)

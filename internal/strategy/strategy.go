@@ -211,7 +211,8 @@ func Build(ctx context.Context, spec Spec, src BarSource, at time.Time, assets [
 					return View{}, fmt.Errorf("%w: %s action %s", ErrFutureData, a, c.SourceID)
 				}
 			}
-			v.bars[a] = s.Bars
+			// The source may reuse its slice, so the view keeps its own copy.
+			v.bars[a] = slices.Clone(s.Bars)
 		}
 	}
 	return v, nil
