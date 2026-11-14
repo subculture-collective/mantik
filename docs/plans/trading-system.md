@@ -1,6 +1,6 @@
 # Mantik trading system design
 
-Status: proposed on 2026-11-13; awaiting owner approval. This document
+Status: approved by the owner on 2026-11-13. This document
 replaces the direction of the
 [2026-11-13 next steps](../roadmap.md#next-steps-2026-11-13). The
 [workflow review](https://claude.ai/artifact/TSXsuuFA5WPgSBAQMb3dJ1) has the
@@ -49,6 +49,7 @@ These were made by the owner on 2026-11-13:
 - **Capital:** the capital distributor manages only about $2,000 of it, the
   amount the owner expects to start live with. Simulated deposits raise that
   cap.
+- **Deposits:** a $500 cash deposit every other Friday at 06:00 Chicago time.
 - **Account types:** Mantik must trade correctly in both a cash account and a
   margin account.
 - **"Proves profitable" means the portfolio beats SPY.** Measured as total
@@ -420,6 +421,20 @@ Calls made for the builder (owner may override):
 - **The cap limits the book, not the broker.** The distributor's cap is the
   book's equity. A simulated deposit is a capital flow that raises it.
   Alpaca's extra paper cash is never used.
+- **Deposit schedule.** The book receives $500 every other Friday at 06:00
+  America/Chicago. Wall-clock time is kept across daylight saving, so 06:00
+  is CST in winter and CDT in summer.
+  - The first deposit is on the first Friday on or after the book opens, and
+    then every 14 days.
+  - The schedule is configuration on the book: amount, interval, weekday,
+    time and time zone.
+  - Each deposit is an idempotent capital flow keyed by its scheduled date. A
+    restart or a late run applies it once, never twice.
+  - A run that missed its time applies the deposit when it next runs. Its
+    effective time stays the scheduled one.
+  - Deposits land as settled cash before the market opens, so a cash account
+    can use them that day.
+  - Backtests replay the same schedule from the backtest's start.
 
 ### Risk
 
