@@ -66,7 +66,8 @@ func (c CostModel) parse() (fee, slip *big.Rat, err error) {
 
 // Config is one run. The engine reads bars through Source; the strategy sees
 // only the views the engine builds. Sessions are the bar dates of Assets whose
-// decision time falls within [Start, End].
+// decision time falls within [Start, End]. The book opens at Start. Deposits,
+// when set, schedule cash flows from then on.
 type Config struct {
 	Strategy    strategy.Strategy
 	Source      strategy.BarSource
@@ -74,6 +75,7 @@ type Config struct {
 	Start, End  time.Time
 	InitialCash string
 	Cost        CostModel
+	Deposits    *DepositSchedule
 }
 
 // Position is a holding in shares, rendered to Scale places.
@@ -94,13 +96,18 @@ type Fill struct {
 	Fee       string `json:"fee"`
 }
 
-// Day is the book at one session's close.
+// Day is the book at one session's close. Deposited is the cash deposited
+// before this session's open. Return is the session's time-weighted return:
+// equity over the previous close plus the deposits, minus one. TWR chains the
+// returns from the start of the run, so deposits never count as profit.
 type Day struct {
 	Date      string     `json:"date"`
 	DecidedAt time.Time  `json:"decided_at"`
 	Cash      string     `json:"cash"`
 	Equity    string     `json:"equity"`
+	Deposited string     `json:"deposited"`
 	Return    string     `json:"return"`
+	TWR       string     `json:"twr"`
 	Positions []Position `json:"positions"`
 	Decided   bool       `json:"decided"`
 }
@@ -115,6 +122,7 @@ type Result struct {
 	InitialCash string            `json:"initial_cash"`
 	Days        []Day             `json:"days"`
 	Fills       []Fill            `json:"fills"`
+	Deposits    []Deposit         `json:"deposits"`
 	Pending     []strategy.Target `json:"pending"`
 }
 
@@ -196,7 +204,15 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	slices.SortFunc(sessions, func(a, b session) int { return strings.Compare(a.date, b.date) })
 
-	out := Result{StrategyID: id, Cost: cfg.Cost, Start: cfg.Start.UTC(), End: cfg.End.UTC(), InitialCash: render(cash), Days: []Day{}, Fills: []Fill{}, Pending: []strategy.Target{}}
+	scheduled := []Deposit{}
+	if cfg.Deposits != nil {
+		if scheduled, err = cfg.Deposits.Due(cfg.Start, cfg.End); err != nil {
+			return Result{}, err
+		}
+	}
+
+	out := Result{StrategyID: id, Cost: cfg.Cost, Start: cfg.Start.UTC(), End: cfg.End.UTC(), InitialCash: render(cash), Days: []Day{}, Fills: []Fill{}, Deposits: []Deposit{}, Pending: []strategy.Target{}}
+	growth := big.NewRat(1, 1) // chained time-weighted growth
 	shares := map[string]*big.Rat{}
 	last := map[string]*big.Rat{} // last raw close seen per asset
 	pending := map[string]*big.Rat{}
@@ -221,13 +237,13 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				held := shares[a]
 				switch {
 				case c.kind == "cash_dividend" && held != nil:
-					dividends = append(dividends, owed{c.pay, new(big.Rat).Mul(held, c.amount)})
+					dividends = append(dividends, owed{c.pay, quantize(new(big.Rat).Mul(held, c.amount))})
 				case c.kind == "split":
 					if held != nil {
-						held.Mul(held, c.ratio)
+						shares[a] = quantize(held.Mul(held, c.ratio))
 					}
 					if l := last[a]; l != nil {
-						l.Quo(l, c.ratio)
+						last[a] = quantize(l.Quo(l, c.ratio))
 					}
 				}
 			}
@@ -241,6 +257,21 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			cash.Add(cash, d.cash)
 		}
 		dividends = kept
+
+		// Deposits due by this session's open arrive first, as settled cash.
+		// Each scheduled deposit is applied once, at the first session open at
+		// or after its scheduled time, and keeps that time as its effective
+		// time.
+		deposited := new(big.Rat)
+		for len(scheduled) > 0 && !scheduled[0].EffectiveAt.After(openTime(s.day)) {
+			d := scheduled[0]
+			scheduled = scheduled[1:]
+			amount, _ := decimal(d.Amount)
+			deposited.Add(deposited, amount)
+			d.AppliedOn = s.date
+			out.Deposits = append(out.Deposits, d)
+		}
+		cash.Add(cash, deposited)
 
 		// Fill the previous decision at this session's open. Size from equity
 		// at the open, priced with opens where available.
@@ -269,7 +300,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				if held == nil {
 					held = new(big.Rat)
 				}
-				target := new(big.Rat).Quo(new(big.Rat).Mul(w, open), b.open)
+				target := quantize(new(big.Rat).Quo(new(big.Rat).Mul(w, open), b.open))
 				delta := new(big.Rat).Sub(target, held)
 				if delta.Sign() == 0 {
 					continue
@@ -281,8 +312,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				} else {
 					price.Sub(price, move)
 				}
-				notional := new(big.Rat).Mul(delta, price)
-				cost := new(big.Rat).Mul(new(big.Rat).Abs(notional), fee)
+				notional := quantize(new(big.Rat).Mul(delta, price))
+				cost := quantize(new(big.Rat).Mul(new(big.Rat).Abs(notional), fee))
 				cash.Sub(cash, notional)
 				cash.Sub(cash, cost)
 				shares[a] = target
@@ -306,11 +337,13 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			}
 		}
 		ret := new(big.Rat)
-		if equity.Sign() != 0 {
-			ret.Sub(new(big.Rat).Quo(next, equity), big.NewRat(1, 1))
+		if base := new(big.Rat).Add(equity, deposited); base.Sign() > 0 {
+			ret = quantize(ret.Sub(new(big.Rat).Quo(next, base), big.NewRat(1, 1)))
 		}
+		growth = quantize(growth.Mul(growth, new(big.Rat).Add(ret, big.NewRat(1, 1))))
 		equity = next
-		day := Day{Date: s.date, DecidedAt: s.at.UTC(), Cash: render(cash), Equity: render(equity), Return: render(ret), Positions: positions}
+		twr := new(big.Rat).Sub(growth, big.NewRat(1, 1))
+		day := Day{Date: s.date, DecidedAt: s.at.UTC(), Cash: render(cash), Equity: render(equity), Deposited: render(deposited), Return: render(ret), TWR: render(twr), Positions: positions}
 
 		// Decide for the next session, once the warm-up is covered.
 		book.Positions = book.Positions[:0]
@@ -425,6 +458,21 @@ func decimal(s string) (*big.Rat, bool) {
 		return nil, false
 	}
 	return new(big.Rat).SetString(s)
+}
+
+// stateScale is the fixed precision of the engine's own state: cash, shares,
+// prices after splits and the chained return are rounded to 18 places after
+// every step, half away from zero. Exact fractions would grow without bound
+// over a long run; 18 places stay far below the 12 places results render to.
+var stateScale = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+
+func quantize(r *big.Rat) *big.Rat {
+	n := new(big.Int).Mul(r.Num(), stateScale)
+	q, m := new(big.Int).QuoRem(n, r.Denom(), new(big.Int))
+	if new(big.Int).Abs(new(big.Int).Lsh(m, 1)).Cmp(r.Denom()) >= 0 {
+		q.Add(q, big.NewInt(int64(n.Sign())))
+	}
+	return new(big.Rat).SetFrac(q, stateScale)
 }
 
 // render rounds to Scale places, half away from zero, without trailing zeros.
