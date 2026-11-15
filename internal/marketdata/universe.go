@@ -115,7 +115,7 @@ func StockUniverse(ctx context.Context, reader UniverseBarReader, reference Asse
 		if err != nil {
 			return out, err
 		}
-		if asOf.UTC().Sub(day) > time.Duration(cfg.MaxAgeDays)*24*time.Hour {
+		if asOf.UTC().Truncate(24*time.Hour).Sub(day) > time.Duration(cfg.MaxAgeDays)*24*time.Hour {
 			continue
 		}
 		close, ok := new(big.Rat).SetString(last.Close)
