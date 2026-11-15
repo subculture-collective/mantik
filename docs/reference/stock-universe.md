@@ -18,7 +18,11 @@ The defaults are configurable:
 | `--min-price` | `5` | Latest raw closing price, dollars |
 | `--min-dollar-volume` | `1000000` | Mean raw close times volume, dollars |
 | `--sessions` | `20` | Required number of trailing daily sessions |
-| `--max-age-days` | `7` | Maximum age of the latest session, calendar days |
+| `--max-age-days` | `7` | Maximum age of the latest session, UTC calendar dates |
+
+Session age compares UTC dates, so a prior session stays one calendar day old
+throughout the next UTC day. The membership clock's time of day does not make it
+stale early.
 
 Prices and liquidity comparisons use exact rational arithmetic. The screen
 covers stocks and ETFs in the US equity class with a listed exchange. It

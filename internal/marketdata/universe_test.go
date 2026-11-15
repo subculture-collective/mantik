@@ -70,3 +70,38 @@ func TestUniverseUsesPriorAvailableBarsAndStableIDs(t *testing.T) {
 		t.Fatal(report, err)
 	}
 }
+
+func TestUniverseSessionAgeUsesUTCCalendarDates(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemory()
+	available := time.Date(2024, 1, 1, 22, 0, 0, 0, time.UTC)
+	bar := storage.DailyBar{AssetID: "asset-spy", Symbol: "SPY", Date: "2024-01-01", Open: "5", High: "5", Low: "5", Close: "5", VWAP: "5", Volume: 200000, PublishedAt: available, ObservedAt: available, AvailableAt: available}
+	if _, err := store.RecordDailyBars(ctx, []storage.DailyBar{bar}); err != nil {
+		t.Fatal(err)
+	}
+	reference := AssetSnapshot{ObservedAt: available, Assets: []StockAsset{{ID: "asset-spy", Symbol: "SPY", Class: "us_equity", Exchange: "ARCA", Status: "active", Tradable: true}}}
+	cfg := DefaultUniverseConfig()
+	cfg.Sessions, cfg.MaxAgeDays = 1, 1
+	for _, tc := range []struct {
+		name, clock string
+		members     int
+	}{
+		{"next-midnight", "2024-01-02T00:00:00Z", 1},
+		{"next-trading-day", "2024-01-02T14:00:00Z", 1},
+		{"end-of-next-day", "2024-01-02T23:59:59Z", 1},
+		{"two-days-old", "2024-01-03T00:00:00Z", 0},
+		{"offset-still-next-UTC-day", "2024-01-03T01:00:00+02:00", 1},
+		{"offset-now-two-UTC-days", "2024-01-02T23:00:00-02:00", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at, err := time.Parse(time.RFC3339, tc.clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := StockUniverse(ctx, store, reference, at, cfg)
+			if err != nil || len(report.Members) != tc.members {
+				t.Fatalf("clock %s: members=%d want=%d error=%v", tc.clock, len(report.Members), tc.members, err)
+			}
+		})
+	}
+}
