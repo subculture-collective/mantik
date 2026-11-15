@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -75,7 +76,8 @@ func verifyNasdaq(raw []byte, c sessionClose) error {
 	for _, row := range source.Data.Table.Rows {
 		if row.Date == "08/12/2019" {
 			count++
-			if !samePrice(row.Close, c.Price) {
+			close := strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(row.Close, ",", ""), "$"))
+			if !samePrice(close, c.Price) {
 				return errors.New("gap price differs from original Nasdaq close")
 			}
 		}

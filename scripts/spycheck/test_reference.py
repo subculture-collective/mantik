@@ -37,6 +37,9 @@ class ReferenceTest(unittest.TestCase):
         source = dict(status=dict(rCode=200), data=dict(symbol="SPY", totalRecords=1,
             tradesTable=dict(rows=[dict(date="08/12/2019", close="288.07")])))
         self.assertEqual(nasdaq_gap(source), "288.07")
+        for text, expected in [("$288.07", "288.07"), ("$1,288.07", "1288.07")]:
+            source["data"]["tradesTable"]["rows"][0]["close"] = text
+            self.assertEqual(nasdaq_gap(source), expected)
         source["data"]["totalRecords"] = 2
         with self.assertRaises(ValueError):
             nasdaq_gap(source)

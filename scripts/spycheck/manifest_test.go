@@ -69,7 +69,7 @@ func TestAuctionManifestBindsPricesToOriginalPrint(t *testing.T) {
 }
 
 func TestManifestGapRequiresBothNasdaqPriceAndEmptySIPOriginal(t *testing.T) {
-	for _, variant := range []string{"valid", "invented_price", "missing_gap", "nonempty_gap"} {
+	for _, variant := range []string{"valid", "currency", "grouped_currency", "invented_price", "missing_gap", "nonempty_gap"} {
 		t.Run(variant, func(t *testing.T) {
 			dir := t.TempDir()
 			c := closeBasisInput().SessionCloses[0]
@@ -88,6 +88,13 @@ func TestManifestGapRequiresBothNasdaqPriceAndEmptySIPOriginal(t *testing.T) {
 			c.GapSourceSHA256 = digest([]byte(original))
 			gap, _ := json.Marshal(map[string]any{"original": original, "sha256": c.GapSourceSHA256, "received_at": c.ObservedAt, "query": map[string]string{"start": "2019-08-12T20:00:00Z", "end": "2019-08-12T20:00:01Z", "feed": "sip"}})
 			nasdaq := []byte(`{"status":{"rCode":200},"data":{"symbol":"SPY","totalRecords":1,"tradesTable":{"rows":[{"date":"08/12/2019","close":"288.07"}]}}}`)
+			if variant == "currency" {
+				nasdaq = []byte(strings.ReplaceAll(string(nasdaq), `"288.07"`, `"$288.07"`))
+			}
+			if variant == "grouped_currency" {
+				nasdaq = []byte(strings.ReplaceAll(string(nasdaq), `"288.07"`, `"$1,288.07"`))
+				c.Price = "1288.07"
+			}
 			c.SourceSHA256 = digest(nasdaq)
 			if variant == "invented_price" {
 				c.Price = "288.10"
@@ -110,7 +117,7 @@ func TestManifestGapRequiresBothNasdaqPriceAndEmptySIPOriginal(t *testing.T) {
 				t.Fatal(err)
 			}
 			err := verifyCloseManifest(path, input, []sessionClose{c})
-			if (err == nil) != (variant == "valid") {
+			if (err == nil) != (variant == "valid" || variant == "currency" || variant == "grouped_currency") {
 				t.Fatal(variant, err)
 			}
 		})
