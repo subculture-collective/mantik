@@ -22,6 +22,10 @@ The asset endpoint must identify a tradable US equity.
 The journal owns a process lock. It fsyncs the order intent before the only
 POST. Every later invocation with the same client ID does only a lookup using
 `/v2/orders:by_client_order_id`, including after a process exit or HTTP 404.
+Research-journal rollover retains the paper account binding and every order
+intent in the active directory, including when cleanup resumes on reopen.
+Raw response files are exported with the other working evidence. These
+permanent submission fences cannot be retired by rollover.
 An unavailable lookup leaves the submission unresolved. It never authorizes
 another POST. A different order under that ID conflicts. Do not use a fresh
 client ID to work around an unresolved submission.

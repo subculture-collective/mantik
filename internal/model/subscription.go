@@ -168,7 +168,7 @@ func (j *Journal) Call(ctx context.Context, call Call, dailyBudget int) (Record,
 		return Record{}, errors.New("model journal clock moved backwards")
 	}
 	if state.Date < date {
-		state = budget{Date: date}
+		state.Date, state.Calls = date, 0
 	}
 	if state.RetryAfter.After(now) {
 		return Record{}, ErrBackoff

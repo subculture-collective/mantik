@@ -187,3 +187,89 @@ func TestPaperValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestPaperSubmissionFencesSurviveRollover(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "completed"
+		if resume {
+			name = "resume-on-open"
+		}
+		t.Run(name, func(t *testing.T) {
+			posts, lookups, cancels := 0, 0, 0
+			account := "account-1"
+			p, root := paperFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v2/account":
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": account, "status": "ACTIVE"})
+				case "/v2/assets/SPY":
+					_, _ = w.Write([]byte(`{"symbol":"SPY","class":"us_equity","tradable":true}`))
+				case "/v2/orders":
+					posts++
+					_, _ = w.Write([]byte(testPaperResponse))
+				case "/v2/orders:by_client_order_id":
+					lookups++
+					_, _ = w.Write([]byte(testPaperResponse))
+				case "/v2/orders/order-1":
+					if r.Method != http.MethodDelete {
+						t.Error(r.Method)
+					}
+					cancels++
+					w.WriteHeader(204)
+				default:
+					t.Error(r.URL.Path)
+					w.WriteHeader(404)
+				}
+			})
+			ctx := context.Background()
+			if _, err := p.Submit(ctx, testStockOrder()); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := p.journal.Rollover(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resume {
+				// Crash after cleanup but before removing the durable pending marker.
+				raw, err := json.Marshal(receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = p.journal.writeOnce(rolloverPending, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = p.journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			j, err := OpenExistingJournal(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			p.journal = j
+			if _, err = p.Submit(ctx, testStockOrder()); err != nil {
+				t.Fatal(err)
+			}
+			if err = p.Cancel(ctx, testStockOrder().ClientOrderID); err != nil {
+				t.Fatal(err)
+			}
+			if posts != 1 || lookups != 2 || cancels != 1 {
+				t.Fatalf("posts=%d lookups=%d cancels=%d", posts, lookups, cancels)
+			}
+			changed := testStockOrder()
+			changed.Qty = "2"
+			if _, err = p.Submit(ctx, changed); !errors.Is(err, ErrJournalConflict) {
+				t.Fatal("lost immutable intent", err)
+			}
+			account = "account-2"
+			other, err := NewPaperTrader(PaperCredentials{OAuthToken: "test-only"}, account, j)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other.origin = p.origin
+			if _, err = other.Submit(ctx, testStockOrder()); !errors.Is(err, ErrJournalConflict) {
+				t.Fatal("lost account binding", err)
+			}
+		})
+	}
+}

@@ -200,3 +200,56 @@ func TestJournalDailyBudgetResetsNextUTCDay(t *testing.T) {
 		t.Fatal("backward clock reset budget")
 	}
 }
+
+func TestRateLimitBackoffSurvivesUTCDayReset(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "journal")
+	j, err := OpenJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 15, 23, 59, 0, 0, time.UTC)
+	j.now = func() time.Time { return now }
+	spawned := 0
+	runner := func(context.Context, string, string, ...string) ([]byte, error) {
+		spawned++
+		if spawned == 1 {
+			return nil, errors.New("429 rate limit")
+		}
+		return []byte("ok"), nil
+	}
+	j.run = runner
+	call := Call{Provider: Codex, Prompt: "x", Timeout: time.Second}
+	record, err := j.Call(context.Background(), call, 1)
+	if err == nil || record.Status != "rate_limited" {
+		t.Fatal(record, err)
+	}
+	deadline := now.Add(5 * time.Minute)
+	// Another process on the new UTC day must observe the same backoff.
+	reopened, err := OpenJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.now, reopened.run = func() time.Time { return now }, runner
+	now = now.Add(2 * time.Minute)
+	if _, err = reopened.Call(context.Background(), call, 1); !errors.Is(err, ErrBackoff) {
+		t.Fatal("day reset discarded backoff", err)
+	}
+	if spawned != 1 {
+		t.Fatal("spawned during backoff", spawned)
+	}
+	state, err := reopened.loadBudget()
+	if err != nil || !state.RetryAfter.Equal(deadline) {
+		t.Fatal(state, err)
+	}
+	now = deadline
+	if _, err = reopened.Call(context.Background(), call, 1); err != nil {
+		t.Fatal(err)
+	}
+	state, err = reopened.loadBudget()
+	if err != nil || state.Date != "2026-11-16" || state.Calls != 1 || spawned != 2 {
+		t.Fatal(state, spawned, err)
+	}
+	if _, err = reopened.Call(context.Background(), call, 1); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatal("new-day budget not enforced", err)
+	}
+}
