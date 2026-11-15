@@ -15,7 +15,7 @@ The approved design is [the trading system design](plans/trading-system.md).
 The work is tracked in
 [roadmap #47](https://github.com/subculture-collective/mantik/issues/47).
 
-**Implementation status, 2026-11-15, America/Chicago** (branch schema 120).
+**Implementation status, 2026-11-15, America/Chicago** (schema 120; merge state is tracked in #47).
 Wave 1 merged in [PR #118](https://github.com/subculture-collective/mantik/pull/118)
 at schema 118. Wave 4 adds [resumable stock backfills](reference/daily-backfill.md),
 the [asset-identity universe](reference/stock-universe.md), and
