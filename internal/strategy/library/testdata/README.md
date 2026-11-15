@@ -36,3 +36,6 @@ uv venv --python 3.13 /tmp/mantik-stock-reference
 uv pip install --python /tmp/mantik-stock-reference/bin/python 'bt @ git+https://github.com/pmorissette/bt@763ae01047fce2d09411faeba436855ecf8b679c' 'ffn @ git+https://github.com/pmorissette/ffn@eb9354c5c82dbada5645569dc34e5861d156e471' 'numpy==2.5.5' 'pandas==3.1.1'
 /tmp/mantik-stock-reference/bin/python internal/strategy/library/testdata/generate.py
 ```
+
+The filename identifies fixture format v1; the root `Version` identifies the
+recipe code version, currently `bt-763ae010-ffn-eb9354c5-recipes-v2`.

@@ -60,6 +60,13 @@ def reference(kind, count):
             continue
         target=SimpleNamespace(now=date,universe=prices.iloc[:i+1],temp={'selected':eligible})
         risk=target.universe[eligible].iloc[-vol-1:].pct_change(fill_method=None).std(ddof=0)
+        # Missing/invalid signal inputs cannot be restored by turnover smoothing.
+        available = {a for a in eligible if np.isfinite(risk[a]) and risk[a] > 1e-12
+                     and len(target.universe[a].iloc[-warm:]) == warm
+                     and np.isfinite(target.universe[a].iloc[-warm:]).all()
+                     and (target.universe[a].iloc[-warm:] > 0).all()}
+        eligible = [a for a in eligible if a in available]
+        target.temp['selected'] = eligible
         if kind=='lowvol':stat=-risk
         elif kind=='trend':
             signals=[]
@@ -74,7 +81,7 @@ def reference(kind, count):
             algo=bt.algos.StatMultiPeriodReturn(lookbacks,lag=pd.DateOffset(days=(date-endpoint).days))
             assert algo(target)
             stat=target.temp['stat']*(-1 if kind=='reversal' else 1)
-        target.temp['stat']=stat
+        target.temp['stat']=stat.loc[eligible]
         if kind!='trend':assert bt.algos.SelectN(count)(target)
         selected=target.temp['selected']
         if kind in ('trend','momentum'):
@@ -88,9 +95,9 @@ def reference(kind, count):
         weights={a:.7*weights[a]/denominator if denominator else 0 for a in selected}
         if kind=='reversal' and not forced:
             for a in old:weights.setdefault(a,0)
-            change=sum(abs(weights[a]-old.get(a,0)) for a in sorted(weights))
+            change=sum(abs(weights[a]-old.get(a,0)) for a in sorted(weights) if a in available)
             if change>.25:
-                weights={a:old.get(a,0)+.25/change*(w-old.get(a,0)) for a,w in weights.items()}
+                weights={a:old.get(a,0)+.25/change*(w-old.get(a,0)) if a in available else 0 for a,w in weights.items()}
         weights={a:np.trunc(w*1e12)/1e12 for a,w in weights.items()}
         decisions.append(dict(Date=str(date.date()),Hold=False,Targets={a:f'{w:.12f}' for a,w in sorted(weights.items()) if w}))
         old=weights;last=key;pending=weights.copy()
@@ -101,7 +108,7 @@ def reference(kind, count):
     return dict(Config=config, ConfigSHA256=config_sha, Decisions=decisions, Fills=fills)
 cases = {kind+'_default':reference(kind,5) for kind in ['trend','momentum','reversal','lowvol']}
 cases.update({kind+'_selection':reference(kind,2) for kind in ['momentum','reversal','lowvol']})
-output = dict(Version='bt-763ae010-ffn-eb9354c5-recipes-v1',
+output = dict(Version='bt-763ae010-ffn-eb9354c5-recipes-v2',
               InputSHA256=hashlib.sha256(source.read_bytes()).hexdigest(), Pins=PINS, Cases=cases)
 # Keep one decision/fill per line so reviewers can inspect numerical changes
 # without a huge expanded fixture diff. This changes formatting, not values.

@@ -20,7 +20,7 @@ import (
 )
 
 // Version pins both source revisions and the reviewed recipe/execution adapter.
-const Version = "bt-763ae010-ffn-eb9354c5-recipes-v1"
+const Version = "bt-763ae010-ffn-eb9354c5-recipes-v2"
 const (
 	Trend    = "trend"
 	Momentum = "momentum"
@@ -235,6 +235,7 @@ func (s *Stock) Decide(v strategy.View) (strategy.Decision, error) {
 		return strategy.Decision{KeepPositions: true, State: v.State()}, nil
 	}
 	selected := []candidate{}
+	available := map[string]bool{}
 	latest := ""
 	for _, a := range assets {
 		recent := v.RecentBars(a, 1)
@@ -249,6 +250,7 @@ func (s *Stock) Decide(v strategy.View) (strategy.Decision, error) {
 		}
 		score, risk, err := Feature(c, v, a)
 		if err == nil {
+			available[a] = true
 			selected = append(selected, candidate{a, score, risk})
 		}
 	}
@@ -284,8 +286,13 @@ func (s *Stock) Decide(v strategy.View) (strategy.Decision, error) {
 		}
 	}
 	if c.Kind == Reversal && !forced {
-		// L1 turnover across entrants, holdings and exits, not just new selections.
+		// Unavailable holdings must exit without consuming the turnover budget.
+		// A healthy asset that merely ranks below Count remains subject to it.
 		for a := range prior.Weights {
+			if !available[a] {
+				weights[a] = 0
+				continue
+			}
 			if _, ok := weights[a]; !ok {
 				weights[a] = 0
 			}
@@ -297,11 +304,17 @@ func (s *Stock) Decide(v strategy.View) (strategy.Decision, error) {
 		}
 		slices.Sort(keys)
 		for _, a := range keys {
+			if !available[a] {
+				continue
+			}
 			change += math.Abs(weights[a] - prior.Weights[a])
 		}
 		if change > c.Turnover {
 			scale := c.Turnover / change
 			for a, w := range weights {
+				if !available[a] {
+					continue
+				}
 				weights[a] = prior.Weights[a] + scale*(w-prior.Weights[a])
 			}
 		}

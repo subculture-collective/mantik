@@ -309,3 +309,112 @@ func TestMembershipExitRetriesAnActualHoldingAfterTargetAlreadyReachedZero(t *te
 		}
 	}
 }
+
+func TestReversalDoesNotRestoreUnavailableHoldingsThroughTurnover(t *testing.T) {
+	for _, reason := range []string{"delayed", "zero-volatility", "short-history"} {
+		t.Run(reason, func(t *testing.T) {
+			src := fixture(t)
+			cfg := library.Default(library.Reversal)
+			cfg.Count = 1
+			s, e := library.New(cfg)
+			if e != nil {
+				t.Fatal(e)
+			}
+			date := src.dates[len(src.dates)-1]
+			switch reason {
+			case "delayed":
+				src.bars["QQQ"] = src.bars["QQQ"][:len(src.bars["QQQ"])-1]
+			case "short-history":
+				src.bars["QQQ"] = src.bars["QQQ"][len(src.bars["QQQ"])-40:]
+			case "zero-volatility":
+				for i := len(src.bars["QQQ"]) - 64; i < len(src.bars["QQQ"]); i++ {
+					bar := &src.bars["QQQ"][i]
+					bar.Open = "100"
+					bar.High = "100"
+					bar.Low = "100"
+					bar.Close = "100"
+					bar.Raw.Open = "100"
+					bar.Raw.High = "100"
+					bar.Raw.Low = "100"
+					bar.Raw.Close = "100"
+				}
+			}
+			state, _ := json.Marshal(map[string]any{"period": "older-week", "weights": map[string]float64{"QQQ": .7}})
+			v, e := strategy.Build(context.Background(), s.Spec(), src, clock(date), []string{"IWM", "QQQ", "SPY"}, strategy.Book{State: state, Positions: []strategy.Position{{Asset: "QQQ", Quantity: "1"}}})
+			if e != nil {
+				t.Fatal(e)
+			}
+			d, e := strategy.Decide(s, v)
+			if e != nil || d.KeepPositions {
+				t.Fatal(d, e)
+			}
+			if len(d.Targets) != 1 {
+				t.Fatal("expected a healthy replacement", d)
+			}
+			for _, target := range d.Targets {
+				w, e := strconv.ParseFloat(target.Weight, 64)
+				if e != nil || target.Asset == "QQQ" || w <= 0 || w > cfg.Turnover+1e-12 {
+					t.Fatal("turnover restored unavailable holding or exceeded remaining-change cap", target)
+				}
+			}
+			var retained struct{ Weights map[string]float64 }
+			if e := json.Unmarshal(d.State, &retained); e != nil {
+				t.Fatal(e)
+			}
+			if retained.Weights["QQQ"] != 0 {
+				t.Fatal("unavailable target retained in state", retained.Weights)
+			}
+		})
+	}
+}
+
+func TestReversalStillLimitsTurnoverForHealthyRankedOutHoldings(t *testing.T) {
+	src := fixture(t)
+	cfg := library.Default(library.Reversal)
+	cfg.Count = 1
+	s, e := library.New(cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	at := clock(src.dates[len(src.dates)-1])
+	v, e := strategy.Build(context.Background(), s.Spec(), src, at, []string{"IWM", "QQQ", "SPY"}, strategy.Book{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	best, worst := "", ""
+	bestScore, worstScore := math.Inf(-1), math.Inf(1)
+	for _, a := range v.Universe() {
+		score, _, e := library.Feature(cfg, v, a)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if score > bestScore {
+			best, bestScore = a, score
+		}
+		if score < worstScore {
+			worst, worstScore = a, score
+		}
+	}
+	if best == worst {
+		t.Fatal("fixture needs distinct ranks")
+	}
+	state, _ := json.Marshal(map[string]any{"period": "older-week", "weights": map[string]float64{worst: .7}})
+	v, e = strategy.Build(context.Background(), s.Spec(), src, at, []string{"IWM", "QQQ", "SPY"}, strategy.Book{State: state, Positions: []strategy.Position{{Asset: worst, Quantity: "1"}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	d, e := strategy.Decide(s, v)
+	if e != nil {
+		t.Fatal(e)
+	}
+	weights := map[string]float64{}
+	for _, target := range d.Targets {
+		weights[target.Asset], e = strconv.ParseFloat(target.Weight, 64)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	if math.Abs(weights[worst]-.575) > 2e-12 || math.Abs(weights[best]-.125) > 2e-12 {
+		t.Fatal("healthy rank exit bypassed turnover cap", weights)
+	}
+}

@@ -42,7 +42,9 @@ Between scheduled rebalances the strategy returns `KeepPositions`, preserving
 shares rather than emitting weights that would cause daily rebalancing.
 Membership exits force an immediate replacement decision. An actual ineligible
 holding is retried even if its prior target had already reached zero. Reversal turnover
-limits use the L1 change over holdings, entrants and exits; a membership exit
+limits use the L1 change over available holdings, entrants and healthy rank
+exits. On a scheduled rebalance, delayed/unavailable holdings are forced to zero
+before applying the turnover limit to the remaining changes. A membership exit
 takes precedence over the turnover limit. No missing asset remains held merely
 to conserve turnover. The book state carries the prior recipe targets and
 schedule period; it does not grant allocation or execution authority.
@@ -59,7 +61,7 @@ The executable source building blocks are:
   [`eb9354c5c82dbada5645569dc34e5861d156e471`](https://github.com/pmorissette/ffn/tree/eb9354c5c82dbada5645569dc34e5861d156e471):
   total-return and inverse-volatility primitives used by bt in `ffn/core.py`.
 
-Code version `bt-763ae010-ffn-eb9354c5-recipes-v1` binds these sources to the
+Code version `bt-763ae010-ffn-eb9354c5-recipes-v2` binds these sources to the
 reviewed Mantik recipe adapter. License notices accompany the reference
 fixtures. The [reference generator](../../internal/strategy/library/testdata/generate.py)
 executes the pinned upstream algorithms, not the Go implementation.
