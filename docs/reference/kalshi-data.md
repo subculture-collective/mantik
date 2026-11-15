@@ -46,7 +46,13 @@ isolated restored database, rather than deleting collected observations.
 
 Direct public reads on 2026-11-15 confirmed weather series `KXHIGHCHI` and
 `KXHIGHNY`, their declared settlement sources, market fields and the
-fixed-point book response. Full collection and storage contracts are checked
+fixed-point book response. A connected CLI collection stored 12 Chicago
+weather markets and 12 book observations in a new disposable PostgreSQL
+container, then read back both counts. The disposable storage contract
+(including concurrent retries and immutable-table guards) passed with race
+detection. The container was removed afterwards; public raw captures and the
+receipt remain outside Git at `/tmp/mantik-wave1-kalshi-evidence/`.
+Full collection and storage contracts are checked
 with loopback fakes and disposable PostgreSQL. Weather probability calibration,
 trading authority and a separate notional fill simulator remain later work.
 
