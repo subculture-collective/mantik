@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
+
+	"git.subcult.tv/subculture-collective/mantik/migrations"
 )
 
 type kalshiBackend interface {
@@ -19,6 +22,21 @@ func TestMemoryKalshiData(t *testing.T) { kalshiContracts(t, NewMemory()) }
 func TestPostgresContractsKalshiData(t *testing.T) {
 	p := timerPostgres(t, "kalshi")
 	kalshiContracts(t, p)
+	// Upgrade/recovery contracts replay additive migrations over existing tables.
+	// Reinstallation must retain observations and keep every guard active.
+	before, err := p.KalshiMarketsAsOf(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := p.pool.Exec(context.Background(), migrations.KalshiData); err != nil {
+			t.Fatal("Kalshi migration replay", err)
+		}
+	}
+	after, err := p.KalshiMarketsAsOf(context.Background(), time.Now())
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("migration replay changed observations", err)
+	}
 	for _, table := range []string{"mantik_kalshi_markets", "mantik_kalshi_order_books"} {
 		for _, sql := range []string{"UPDATE " + table + " SET sha256='invalid'", "DELETE FROM " + table, "TRUNCATE " + table} {
 			if _, err := p.pool.Exec(context.Background(), sql); err == nil {
