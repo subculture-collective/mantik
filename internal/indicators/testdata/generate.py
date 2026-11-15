@@ -10,7 +10,7 @@ import talib
 assert talib.__version__ == "0.8.3"
 root = Path(__file__).parent
 source = root / "spy-adjusted-v1.csv"
-assert hashlib.sha256(source.read_bytes()).hexdigest() == "623a924364e1162944e11407c383a3b40aa43d9d5d118a4730bb5b5bb8d22baa"
+assert hashlib.sha256(source.read_bytes()).hexdigest() == "5a7293defdb4639fdc3d0fb96b71954e49f27e4b921a75dd884ebbfe776a4755"
 with source.open() as stream:
     rows = list(csv.DictReader(stream))
 high, low, close = (np.array([float(r[k]) for r in rows]) for k in ("High", "Low", "Close"))

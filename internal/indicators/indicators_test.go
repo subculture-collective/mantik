@@ -20,7 +20,7 @@ func fixture(t *testing.T) marketdata.Series {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != "623a924364e1162944e11407c383a3b40aa43d9d5d118a4730bb5b5bb8d22baa" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != "5a7293defdb4639fdc3d0fb96b71954e49f27e4b921a75dd884ebbfe776a4755" {
 		t.Fatal("input hash", got)
 	}
 	f, err := os.Open("testdata/spy-adjusted-v1.csv")

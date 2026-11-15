@@ -13,9 +13,9 @@ Mantik's pay-date total-return series.
   `076ace6b4a2683dd4ee9380ba9eebe7256b8f6ec64c3991bfbf51492d6d11350`.
   The original response remains outside Git.
 - Retained CSV SHA-256:
-  `623a924364e1162944e11407c383a3b40aa43d9d5d118a4730bb5b5bb8d22baa`.
-  Columns are provider timestamp and adjusted open/high/low/close; original CRLF
-  bytes are retained. The Go test pins this hash.
+  `5a7293defdb4639fdc3d0fb96b71954e49f27e4b921a75dd884ebbfe776a4755`.
+  Columns are provider timestamp and adjusted open/high/low/close; line endings are normalized
+  to repository-standard LF. The Go test pins this hash.
 - Reference: TA-Lib Python 0.8.3 and C library 0.8.3. Run `generate.py` in
   an isolated environment with `TA-Lib==0.8.3` to reproduce `talib-v1.json`.
   Runtime tests require Go only; TA-Lib and Python are not app dependencies.
