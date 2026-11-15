@@ -11,7 +11,7 @@ reported as inventory, not marked at an invented fair value.
 
 ## Fill policy
 
-Version `kalshi-notional-depth-fees-v1` supports whole-contract limit buys and
+Version `kalshi-notional-depth-fees-v2` supports whole-contract limit buys and
 sales of owned contracts. The execution cutoff must be after the decision,
 and its selected recorded book must also be strictly later than the decision.
 Future/mismatched market and book reads are refused. Market and event-fee
@@ -37,7 +37,9 @@ Maker-first strategy/queue behavior remains later work in #104.
 Order IDs are idempotent for the same complete request and cutoff; conflicting
 reuse fails. An insufficient-cash or invalid execution changes nothing. All
 operations must be replayed in nondecreasing cutoff order, on one sequential
-book instance. Copies returned by execution/report cannot mutate its state.
+book instance. Fill times must also be no earlier than the latest applied fill
+or settlement cash event; a later cutoff cannot use new proceeds to fund an
+older book. An empty execution does not advance this financial-event clock. Copies returned by execution/report cannot mutate its state.
 Initial notional capital is bounded at $1 million and one order at one million
 contracts. No production account, database or capital flow is shared.
 

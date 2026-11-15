@@ -16,7 +16,7 @@ import (
 )
 
 // SimulationVersion names whole-contract, recorded-depth, taker-only simulation.
-const SimulationVersion = "kalshi-notional-depth-fees-v1"
+const SimulationVersion = "kalshi-notional-depth-fees-v2"
 const dollarMicros int64 = 1000000
 
 // SimulationStore reads recorded markets and books without venue order access.
@@ -64,6 +64,7 @@ type executed struct {
 type NotionalBook struct {
 	cash, fees, payout int64
 	last               time.Time
+	eventAt            time.Time // most recent applied fill or settlement cash event
 	positions          map[string]int64
 	consumed           map[string]int64
 	orders             map[string]executed
@@ -242,6 +243,9 @@ func (b *NotionalBook) Execute(ctx context.Context, store SimulationStore, o Sim
 	if book == nil || !book.ObservedAt.After(o.At) || simHash(book.Original) != book.SHA256 {
 		return nil, errors.New("no strictly later recorded book")
 	}
+	if book.ObservedAt.Before(b.eventAt) {
+		return nil, errors.New("recorded book precedes an applied financial event")
+	}
 	if market.ObservedAt.After(book.ObservedAt) || event.ObservedAt.After(book.ObservedAt) {
 		return nil, errors.New("market/fee evidence was not known at simulated fill time")
 	}
@@ -361,6 +365,9 @@ func (b *NotionalBook) Execute(ctx context.Context, store SimulationStore, o Sim
 		b.consumed[key] += n
 	}
 	b.fills = append(b.fills, fills...)
+	if totalQty > 0 {
+		b.eventAt = book.ObservedAt
+	}
 	b.last = at
 	b.orders[o.ID] = executed{o, at, slices.Clone(fills)}
 	return fills, nil
@@ -432,6 +439,7 @@ func (b *NotionalBook) settle(r storage.KalshiWeatherSettlement, at time.Time) e
 	delete(b.positions, r.MarketTicker+"/yes")
 	delete(b.positions, r.MarketTicker+"/no")
 	b.settlements[r.MarketTicker] = r.Yes
+	b.eventAt = at
 	b.last = at
 	return nil
 }

@@ -199,7 +199,7 @@ func Compile(d Definition) (*Compiled, error) {
 	}
 	slices.Sort(data)
 	data = slices.Compact(data)
-	version := "typed-expr-v1"
+	version := "typed-expr-v2"
 	if block != nil {
 		version += "-" + library.Version
 	}
@@ -330,26 +330,47 @@ func (c *Compiled) Decide(v strategy.View) (strategy.Decision, error) {
 				out = value{x.v/y.v - 1, true}
 			}
 		case "rank":
-			x := arg(0)
-			if !x.ok {
-				break
+			// Evaluate and sort the whole cross-section once. Populate memo for
+			// every asset, including unavailable values, so later requests for
+			// this node/offset do not rescan all assets.
+			type ranked struct {
+				asset string
+				v     float64
 			}
-			less, equal, total := 0, 0, 0
+			xs := make([]ranked, 0, len(assets))
 			for _, other := range assets {
 				y := eval(n.Args[0], other, offset)
+				memo[key{n, other, offset}] = value{}
 				if y.ok {
-					total++
-					if y.v < x.v {
-						less++
-					}
-					if y.v == x.v {
-						equal++
-					}
+					xs = append(xs, ranked{other, y.v})
 				}
 			}
-			if total > 0 {
-				out = value{(float64(less) + float64(equal+1)/2) / float64(total), true}
+			slices.SortFunc(xs, func(a, b ranked) int {
+				steps++
+				if a.v < b.v {
+					return -1
+				}
+				if a.v > b.v {
+					return 1
+				}
+				return strings.Compare(a.asset, b.asset)
+			})
+			if steps > MaxWork {
+				return value{}
 			}
+			for i := 0; i < len(xs); {
+				j := i + 1
+				for j < len(xs) && xs[j].v == xs[i].v {
+					j++
+				}
+				rank := (float64(i+1) + float64(j)) / 2 / float64(len(xs))
+				for _, x := range xs[i:j] {
+					steps++
+					memo[key{n, x.asset, offset}] = value{rank, true}
+				}
+				i = j
+			}
+			out = memo[k]
 		case "sign", "abs":
 			out = arg(0)
 			if n.Op == "abs" {

@@ -258,3 +258,84 @@ func TestSimulationCannotSpendUnknownCashOrConsumeOppositeDepthTwice(t *testing.
 		t.Fatal("same resting NO bids consumed by YES buy and NO sell", fills, e)
 	}
 }
+
+func TestOlderMarketBookCannotSpendASettlementCreditedLater(t *testing.T) {
+	ctx := context.Background()
+	s, at := simFixture()
+	event := simEvent(at)
+	b, e := NewNotionalBook(dollarMicros)
+	if e != nil {
+		t.Fatal(e)
+	}
+	buy := SimOrder{ID: "first-market", MarketTicker: "KXTEST", Side: "yes", Action: "buy", Limit: "0.6", Contracts: 1, At: at}
+	if _, e := b.Execute(ctx, s, buy, at.Add(2*time.Minute), event); e != nil {
+		t.Fatal(e)
+	}
+	beforeSettlement := b.Report().CashMicros
+	settledAt := at.Add(25 * time.Hour)
+	if e := b.Settle(ctx, settlementRows{officialResult(settledAt, true)}, "KXTEST", settledAt); e != nil {
+		t.Fatal(e)
+	}
+	// A different, still-open market has only an earlier retained book. The two
+	// contracts cost more than the pre-settlement balance but less than the
+	// current balance, exposing use of cash before it existed.
+	other := s
+	other.markets = append([]storage.KalshiMarket(nil), s.markets...)
+	other.books = append([]storage.KalshiOrderBook(nil), s.books...)
+	m := &other.markets[0]
+	m.Ticker = "KXOTHER"
+	m.CloseTime = at.Add(72 * time.Hour).Format(time.RFC3339)
+	raw, _ := json.Marshal(map[string]any{"markets": []map[string]any{{"ticker": m.Ticker, "event_ticker": m.EventTicker, "status": m.Status, "close_time": m.CloseTime}}})
+	m.Original = string(raw)
+	m.SHA256 = simHash(m.Original)
+	other.books[0].MarketTicker = m.Ticker
+	order := SimOrder{ID: "historical-other", MarketTicker: m.Ticker, Side: "yes", Action: "buy", Limit: "0.6", Contracts: 2, At: at}
+	if beforeSettlement >= 1200000 || b.Report().CashMicros < 1233600 {
+		t.Fatal("fixture did not require future payout cash")
+	}
+	before, _ := json.Marshal(b.Report())
+	if fills, e := b.Execute(ctx, other, order, settledAt.Add(time.Minute), event); e == nil {
+		t.Fatal("used settlement proceeds for an older fill", fills)
+	}
+	after, _ := json.Marshal(b.Report())
+	if string(before) != string(after) {
+		t.Fatal("rejected historical fill changed the book")
+	}
+	// It can execute when fresh depth is actually observed after the payout.
+	other.books[0].ObservedAt = settledAt.Add(time.Minute)
+	if fills, e := b.Execute(ctx, other, order, settledAt.Add(2*time.Minute), event); e != nil || len(fills) != 1 || fills[0].Contracts != 2 {
+		t.Fatal("chronological fill rejected", fills, e)
+	}
+}
+
+func TestFillChronologyIsNotAdvancedByEmptyExecutions(t *testing.T) {
+	ctx := context.Background()
+	s, at := simFixture()
+	event := simEvent(at)
+	b := newSim(t)
+	// A no-fill cutoff is later than the next valid book, but did not mutate
+	// money or inventory. It must not act like a future credit or debit.
+	empty := SimOrder{ID: "not-executable", MarketTicker: "KXTEST", Side: "yes", Action: "buy", Limit: "0.1", Contracts: 1, At: at}
+	if fills, e := b.Execute(ctx, s, empty, at.Add(5*time.Minute), event); e != nil || len(fills) != 0 {
+		t.Fatal(fills, e)
+	}
+	buy := empty
+	buy.ID = "first-fill"
+	buy.Limit = "0.6"
+	if fills, e := b.Execute(ctx, s, buy, at.Add(6*time.Minute), event); e != nil || len(fills) != 1 {
+		t.Fatal("empty execution incorrectly advanced financial clock", fills, e)
+	}
+	// A genuinely earlier fill after a later fill is forbidden even if the
+	// process cutoff continues forward and cash would cover the order.
+	later := s
+	later.books = append([]storage.KalshiOrderBook(nil), s.books...)
+	later.books[0].ObservedAt = at.Add(3 * time.Minute)
+	buy.ID = "later-fill"
+	if _, e := b.Execute(ctx, later, buy, at.Add(7*time.Minute), event); e != nil {
+		t.Fatal(e)
+	}
+	buy.ID = "earlier-fill"
+	if _, e := b.Execute(ctx, s, buy, at.Add(8*time.Minute), event); e == nil {
+		t.Fatal("backward fill after an applied trade was admitted")
+	}
+}

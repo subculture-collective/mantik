@@ -63,6 +63,10 @@ sessions, and 200,000 evaluation steps. Compile also checks a conservative
 per-asset work estimate against the existing 1,000-asset view bound; combinations
 can therefore fail the cost limit before reaching a window's individual limit.
 Runtime counting includes cached lookups and cross-sectional operations.
+Each rank node/offset evaluates and sorts the cross-section once, assigns
+average ranks to ties, and caches every asset's result (including unavailable
+values). This supports ordinary ranks over the full 1,000-asset view without
+repeated quadratic scans; the 200,000-step budget remains enforced.
 
 Warm-up is inferred from the expression. Evaluation copies only the required
 recent bars. The builder rejects future source observations, action clocks,
@@ -72,6 +76,7 @@ values. LongOnly clips negative scores to zero; otherwise scores can be signed.
 Finite scores normalize to the declared absolute gross, with weights truncated
 toward zero at 12 decimals. No available nonzero scores means zero targets.
 
+Operator version `typed-expr-v2` records this rank evaluation behavior.
 `Spec.ID()` includes the complete normalized definition's SHA-256, operator
 version, inferred warm-up and required data kinds. Library-backed definitions
 also bind the library code version. Changing a literal, operator, window,

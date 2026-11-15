@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -198,5 +199,92 @@ func TestOptionTermsUseOnlyValidatedCurrentChains(t *testing.T) {
 	}
 	if _, e := strategy.Build(context.Background(), c.Spec(), chainSource{future: true}, at, []string{"A"}, strategy.Book{}); e == nil {
 		t.Fatal("future chain admitted")
+	}
+}
+
+type wideSource struct{}
+
+func (wideSource) AdjustedBars(_ context.Context, a string, at time.Time) (marketdata.Series, error) {
+	i, e := strconv.Atoi(strings.TrimPrefix(a, "asset-"))
+	if e != nil {
+		return marketdata.Series{}, e
+	}
+	// Adjacent pairs tie; descending asset order exercises actual value sorting.
+	price := strconv.Itoa(1000 - i/2)
+	previous := strconv.Itoa(1 + i/2)
+	priorAt := at.AddDate(0, 0, -1)
+	return marketdata.Series{AssetID: a, AsOf: at, Bars: []marketdata.AdjustedBar{
+		{Date: priorAt.Format(time.DateOnly), Open: previous, High: previous, Low: previous, Close: previous, Volume: "1", Raw: storage.DailyBar{AssetID: a, AvailableAt: priorAt}},
+		{Date: at.Format(time.DateOnly), Open: price, High: price, Low: price, Close: price, Volume: "1", Raw: storage.DailyBar{AssetID: a, AvailableAt: at}},
+	}}, nil
+}
+func TestRanksSupportTheFullAssetBoundWithAverageTies(t *testing.T) {
+	for _, count := range []int{500, strategy.MaxAssets} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			c, e := spec.Compile(def(op("rank", field("close"))))
+			if e != nil {
+				t.Fatal(e)
+			}
+			assets := make([]string, count)
+			for i := range assets {
+				assets[i] = fmt.Sprintf("asset-%04d", i)
+			}
+			at := time.Date(2026, 1, 9, 22, 0, 0, 0, time.UTC)
+			v, e := strategy.Build(context.Background(), c.Spec(), wideSource{}, at, assets, strategy.Book{})
+			if e != nil {
+				t.Fatal(e)
+			}
+			d, e := strategy.Decide(c, v)
+			if e != nil {
+				t.Fatal("ordinary supported universe exhausted rank work budget", e)
+			}
+			if len(d.Targets) != count {
+				t.Fatal("rank dropped valid assets", len(d.Targets))
+			}
+			// Each pair's normalized average rank is known independently of evaluation
+			// order. Its normalized weight is gross * averageRank / totalRanks.
+			totalRanks := float64(count*(count+1)) / 2
+			for _, target := range d.Targets {
+				i, e := strconv.Atoi(strings.TrimPrefix(target.Asset, "asset-"))
+				if e != nil {
+					t.Fatal(e)
+				}
+				rank := float64(count-i/2*2) - .5
+				want := math.Trunc(.7*rank/totalRanks*1e12) / 1e12
+				got, e := strconv.ParseFloat(target.Weight, 64)
+				if e != nil || math.Abs(got-want) > 2e-12 {
+					t.Fatalf("%s rank weight %.12f want %.12f", target.Asset, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRollingRanksCacheEachHistoricalOffsetSeparately(t *testing.T) {
+	count := strategy.MaxAssets
+	c, e := spec.Compile(def(&spec.Expr{Op: "mean", Window: 2, Args: []*spec.Expr{op("rank", field("close"))}}))
+	if e != nil {
+		t.Fatal(e)
+	}
+	assets := make([]string, count)
+	for i := range assets {
+		assets[i] = fmt.Sprintf("asset-%04d", i)
+	}
+	at := time.Date(2026, 1, 9, 22, 0, 0, 0, time.UTC)
+	v, e := strategy.Build(context.Background(), c.Spec(), wideSource{}, at, assets, strategy.Book{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	d, e := strategy.Decide(c, v)
+	if e != nil || len(d.Targets) != count {
+		t.Fatal("rolling ranks failed supported universe", len(d.Targets), e)
+	}
+	// Yesterday's cross-section reverses today's ranks, so each two-session
+	// average is equal. A cache shared across offsets would produce unequal weights.
+	for _, target := range d.Targets {
+		w, e := strconv.ParseFloat(target.Weight, 64)
+		if e != nil || math.Abs(w-.7/float64(count)) > 2e-12 {
+			t.Fatal("rank cache mixed historical offsets", target)
+		}
 	}
 }
