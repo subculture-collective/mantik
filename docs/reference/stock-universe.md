@@ -49,3 +49,8 @@ historical clock merely because their session date is old. This collector does
 not manufacture publication history or qualify a backtest.
 
 Provider contract: [Alpaca assets](https://docs.alpaca.markets/us/docs/assets).
+
+On Kvant on 2026-11-15, the real loader retained 14,406 active and 19,150
+inactive assets (33,556 total), including TXSE listings. Raw provider responses
+and the normalized catalogue remain private outside Git. This count does not
+establish complete delisted-company coverage.
