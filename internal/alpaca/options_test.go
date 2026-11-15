@@ -2,6 +2,7 @@ package alpaca
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,5 +115,74 @@ func TestOptionsRejectUnsupportedRequestsBeforeNetwork(t *testing.T) {
 		if _, err := c.target(q, time.Now()); err == nil {
 			t.Fatal("invalid request admitted", q)
 		}
+	}
+}
+
+func TestOptionsPreserveSubsecondHistoryBoundaries(t *testing.T) {
+	for _, tc := range []struct{ name, end string }{
+		{"whole-second-end", "2024-02-01T15:00:01Z"},
+		{"fractional-end", "2024-02-01T15:00:00.501Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start, err := time.Parse(time.RFC3339Nano, "2024-02-01T15:00:00.1Z")
+			if err != nil {
+				t.Fatal(err)
+			}
+			end, err := time.Parse(time.RFC3339Nano, tc.end)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := []time.Time{start.Add(-time.Nanosecond), start, start.Add(100 * time.Millisecond), end.Add(-time.Nanosecond), end}
+			symbol := "SPY240202C00490000"
+			c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				switch r.URL.Path {
+				case "/v2/options/contracts":
+					if q.Get("status") == "active" {
+						fmt.Fprint(w, `{"option_contracts":[],"next_page_token":null}`)
+						return
+					}
+					fmt.Fprintf(w, `{"option_contracts":[{"id":"standard","symbol":%q,"underlying_symbol":"SPY","expiration_date":"2024-02-02","strike_price":"490","type":"call"}],"next_page_token":null}`, symbol)
+				case "/v1beta1/options/bars":
+					fmt.Fprint(w, `{"bars":{},"next_page_token":null}`)
+				case "/v1beta1/options/trades":
+					from, e1 := time.Parse(time.RFC3339Nano, q.Get("start"))
+					to, e2 := time.Parse(time.RFC3339Nano, q.Get("end"))
+					if e1 != nil || e2 != nil {
+						t.Error("invalid request boundary")
+						w.WriteHeader(400)
+						return
+					}
+					trades := []map[string]any{}
+					for _, at := range events {
+						if !at.Before(from) && !at.After(to) {
+							trades = append(trades, map[string]any{"t": at.Format(time.RFC3339Nano), "p": 1, "s": 1, "c": "I", "x": "I"})
+						}
+					}
+					if err := json.NewEncoder(w).Encode(map[string]any{"trades": map[string]any{symbol: trades}, "next_page_token": nil}); err != nil {
+						t.Error(err)
+					}
+				default:
+					t.Error(r.URL)
+					w.WriteHeader(404)
+				}
+			})
+			c.barInterval = 0
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			j, err := OpenJournal(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			store := storage.NewMemory()
+			spec := OptionSpec{Underlyings: []string{"SPY"}, Start: start, End: end, ExpiryStart: "2024-02-02", ExpiryEnd: "2024-02-02"}
+			got, err := j.CollectOptions(context.Background(), c, store, spec, io.Discard)
+			if err != nil || got.Trades != 3 {
+				t.Fatalf("exclusive range [%s,%s): trades=%d want=3 error=%v", start, end, got.Trades, err)
+			}
+		})
 	}
 }

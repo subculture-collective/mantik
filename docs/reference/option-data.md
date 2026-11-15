@@ -32,7 +32,13 @@ nonstandard/adjusted symbols such as `1SPY…` remain as reference observations 
 are counted as skipped for market data, because the bars endpoint rejects them.
 
 Daily bars use `timeframe=1Day` and `sort=asc`; trades use the same time bounds
-and ascending order. The historical endpoints reject a `feed` query parameter
+and ascending order. Internal `OptionSpec` ranges preserve nanosecond precision:
+the inclusive provider end is the exclusive end minus one nanosecond, and both
+request boundaries use RFC3339Nano. The CLI still takes UTC dates. Historical
+checkpoints bind those exact request boundaries, so a less precise old request
+is not reused as evidence for an expanded range.
+
+The historical endpoints reject a `feed` query parameter
 (confirmed HTTP 400 on the real API), unlike snapshots. They use the provider
 default. Each market record carries conservative `feed: indicative` classification
 and `feed_selection: provider_default_unverified`, never an assertion that the
@@ -105,3 +111,10 @@ parameter and indicative trades omit IDs. The implementation and regression
 fixtures follow those observed contracts. This sample does not establish
 complete SPY option-history coverage, historical chain availability, verified
 feed provenance or executable prices.
+
+A later boundary check on the same date requested SPY call trades in
+`[2024-02-01T14:30:00.1Z, 2024-02-01T14:30:00.5Z)`, using provider inclusive
+end `14:30:00.499999999Z`. The real API accepted the nanosecond boundary and
+returned three trades, all within the requested interval, with no further page.
+This supplements the earlier larger sample; its private receipt is
+`/tmp/mantik-wave4-evidence/option-boundary-probe.json`.

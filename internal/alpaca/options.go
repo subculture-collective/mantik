@@ -243,7 +243,7 @@ func (j *Journal) CollectOptions(ctx context.Context, c *Client, store OptionWri
 				if kind == "trade" {
 					capability, envelope = "option_trades", "trades"
 				}
-				q := Query{Capability: capability, Symbols: []string{symbol}, Start: s.Start.Format(time.RFC3339), End: s.End.Add(-time.Second).Format(time.RFC3339)}
+				q := Query{Capability: capability, Symbols: []string{symbol}, Start: s.Start.UTC().Format(time.RFC3339Nano), End: s.End.UTC().Add(-time.Nanosecond).Format(time.RFC3339Nano)}
 				var previous time.Time
 				occurrences := map[string]int{}
 				err := pages(ctx, j, c, q, func(res Response) (string, error) {
