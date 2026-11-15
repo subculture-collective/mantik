@@ -285,3 +285,27 @@ func TestRepeatedViewsAreDeterministicAndDelayedMembersAreUnavailable(t *testing
 		t.Fatal("stale feature accepted")
 	}
 }
+
+func TestMembershipExitRetriesAnActualHoldingAfterTargetAlreadyReachedZero(t *testing.T) {
+	src := fixture(t)
+	cfg := library.Default(library.Momentum)
+	s, e := library.New(cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	date := src.dates[430]
+	state, _ := json.Marshal(map[string]any{"period": date[:7], "weights": map[string]float64{"QQQ": 0, "SPY": .7}})
+	v, e := strategy.Build(context.Background(), s.Spec(), src, clock(date), []string{"IWM", "QQQ", "SPY"}, strategy.Book{State: state, Positions: []strategy.Position{{Asset: "QQQ", Quantity: "1"}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	d, e := strategy.Decide(s, v)
+	if e != nil || d.KeepPositions {
+		t.Fatal("held ineligible asset was not retried", d, e)
+	}
+	for _, target := range d.Targets {
+		if target.Asset == "QQQ" {
+			t.Fatal("ineligible holding became a new target")
+		}
+	}
+}

@@ -103,5 +103,23 @@ cases = {kind+'_default':reference(kind,5) for kind in ['trend','momentum','reve
 cases.update({kind+'_selection':reference(kind,2) for kind in ['momentum','reversal','lowvol']})
 output = dict(Version='bt-763ae010-ffn-eb9354c5-recipes-v1',
               InputSHA256=hashlib.sha256(source.read_bytes()).hexdigest(), Pins=PINS, Cases=cases)
-(root/'recipes-v1.json').write_text(json.dumps(output,indent=2,allow_nan=False)+'\n')
+# Keep one decision/fill per line so reviewers can inspect numerical changes
+# without a huge expanded fixture diff. This changes formatting, not values.
+lines = ['{']
+for key in ('Version', 'InputSHA256', 'Pins'):
+    lines.append('  '+json.dumps(key)+': '+json.dumps(output[key], allow_nan=False)+',')
+lines.append('  "Cases": {')
+for case_index, (name, case) in enumerate(cases.items()):
+    lines.append('    '+json.dumps(name)+': {')
+    for key in ('Config', 'ConfigSHA256'):
+        lines.append('      '+json.dumps(key)+': '+json.dumps(case[key], allow_nan=False)+',')
+    for key in ('Decisions', 'Fills'):
+        lines.append('      '+json.dumps(key)+': [')
+        values = case[key]
+        for index, value in enumerate(values):
+            lines.append('        '+json.dumps(value, allow_nan=False)+(',' if index+1<len(values) else ''))
+        lines.append('      ]'+(',' if key=='Decisions' else ''))
+    lines.append('    }'+(',' if case_index+1<len(cases) else ''))
+lines.extend(['  }', '}'])
+(root/'recipes-v1.json').write_text('\n'.join(lines)+'\n')
 print('Generated upstream-building-block recipe decisions and next-session fills.')

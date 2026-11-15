@@ -222,6 +222,15 @@ func (s *Stock) Decide(v strategy.View) (strategy.Decision, error) {
 			forced = true
 		}
 	}
+	for _, position := range v.Positions() {
+		quantity, err := strconv.ParseFloat(position.Quantity, 64)
+		if err != nil || !finite(quantity) {
+			return strategy.Decision{}, errors.New("invalid strategy holding")
+		}
+		if quantity != 0 && !slices.Contains(assets, position.Asset) {
+			forced = true
+		}
+	}
 	if prior.Period == period && !forced {
 		return strategy.Decision{KeepPositions: true, State: v.State()}, nil
 	}

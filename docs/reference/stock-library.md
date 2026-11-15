@@ -40,7 +40,8 @@ outside strategy authority.
 
 Between scheduled rebalances the strategy returns `KeepPositions`, preserving
 shares rather than emitting weights that would cause daily rebalancing.
-Membership exits force an immediate replacement decision. Reversal turnover
+Membership exits force an immediate replacement decision. An actual ineligible
+holding is retried even if its prior target had already reached zero. Reversal turnover
 limits use the L1 change over holdings, entrants and exits; a membership exit
 takes precedence over the turnover limit. No missing asset remains held merely
 to conserve turnover. The book state carries the prior recipe targets and

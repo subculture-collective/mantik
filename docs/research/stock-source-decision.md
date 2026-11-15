@@ -17,8 +17,9 @@ and its declared next-session execution adapter. It does **not** claim the
 trades match an unchanged complete external strategy application, nor that it
 reproduces a paper's empirical results. That stronger requirement would call
 for different source strategies and, in several cases, different trading rules.
-This is an implementation interpretation, not a claim that the owner waived
-an acceptance criterion or approved a stronger equivalence claim.
+The owner explicitly selected “Use the reviewed recipe ports and their pinned
+reference tests” during Wave 7 implementation. This records that acceptance
+choice; it does not approve the stronger external-application equivalence claim.
 
 ## Sources considered
 
