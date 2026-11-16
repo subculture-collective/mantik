@@ -14,6 +14,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
+	"git.subcult.tv/subculture-collective/mantik/migrations"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -206,6 +207,11 @@ func TestPostgresContractsCappedReplayTransactionRollbackAndIncrementalRead(t *t
 	}
 	state, e = p.ApplyCappedBook(ctx, state.Config.ID, 0, account.BookCommand{ID: "kill", Kind: "risk_control", At: at, RiskControl: &risk.Control{Action: "kill"}})
 	if e != nil {
+		t.Fatal(e)
+	}
+	// The joined shared writer leaves postcommit cache publication to a read.
+	// Warm the committed kill before checking transaction-local isolation.
+	if _, e = p.CappedBook(ctx, state.Config.ID); e != nil {
 		t.Fatal(e)
 	}
 	tx, e := p.pool.Begin(ctx)
@@ -416,4 +422,107 @@ func TestPostgresContractsCappedReplayFinalFenceSeesCommittedControl(t *testing.
 		t.Fatal("old verified cache authorized newer killed head", e)
 	}
 	t.Log("final fence warmed an old verified prefix, waited on the writer, replayed the committed owner kill and refused submission")
+}
+
+// Exercise the joined writer against a completely full predecessor journal
+// with an already executed protective fill awaiting local custody.
+func TestPostgresContractsCappedReplayFullLegacyProtectiveFill(t *testing.T) {
+	p := timerPostgres(t, "replay_legacy_fill")
+	ctx := context.Background()
+	at := time.Date(2026, 11, 16, 14, 0, 0, 0, time.UTC)
+	cfg := account.DefaultCappedConfig("legacy-fill", "legacy-fill-paper", account.Cash, at)
+	legacy, e := p.CreateCappedBook(ctx, cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	entry := account.BookOrder{ID: "entry", Symbol: "SPY", Quantity: "0.1", Limit: "100", Fee: "0", Side: "buy", At: at}
+	exit := entry
+	exit.ID, exit.Side, exit.ReduceOnly = "protective", "sell", true
+	fill := account.BookFill{ID: "entry-fill", OrderID: entry.ID, VenueOrderID: "entry-venue", Symbol: "SPY", Quantity: "0.1", Price: "100", Fee: "0", Side: "buy", At: at, SourceSHA256: strings.Repeat("a", 64)}
+	marks := map[string]string{"SPY": "100"}
+	for _, c := range []account.BookCommand{
+		{ID: "entry-reserve", Kind: "reserve", At: at, Order: &entry, Marks: marks},
+		{ID: "entry-bind", Kind: "bind", At: at, OrderID: entry.ID, VenueOrderID: fill.VenueOrderID},
+		{ID: fill.ID, Kind: "fill", At: at, Fill: &fill, Marks: marks},
+		{ID: "exit-reserve", Kind: "reserve", At: at, Order: &exit, Marks: marks},
+		{ID: "exit-bind", Kind: "bind", At: at, OrderID: exit.ID, VenueOrderID: "exit-venue"},
+	} {
+		legacy, e = account.ApplyCappedCommand(legacy, c)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	for len(legacy.Events) < 4096 {
+		i := len(legacy.Events)
+		legacy.Events = append(legacy.Events, account.BookCommand{ID: fmt.Sprintf("legacy-observation-%d", i), Kind: "risk_observe", At: at.Add(time.Duration(i) * time.Second), Marks: marks})
+	}
+	legacy.Version = 4096
+	// Only this disposable fixture bypasses the post-126 legacy insertion seal.
+	// Restore the trigger within the same transaction as the predecessor rows.
+	tx, e := p.pool.Begin(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, e = tx.Exec(ctx, `DROP TRIGGER capped_legacy_sealed ON mantik_capped_book_events`); e != nil {
+		t.Fatal(e)
+	}
+	for i, c := range legacy.Events {
+		raw, e := json.Marshal(c)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_events(book_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)`, cfg.ID, i+1, c.ID, string(raw)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if _, e = tx.Exec(ctx, migrations.CappedBookHistory); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(ctx); e != nil {
+		t.Fatal(e)
+	}
+	got, e := p.CappedBook(ctx, cfg.ID)
+	if e != nil || !reflect.DeepEqual(got, legacy) {
+		t.Fatal("predecessor custody changed", e)
+	}
+	fill.ID, fill.OrderID, fill.VenueOrderID, fill.Side = "protective-fill", exit.ID, "exit-venue", "sell"
+	fill.At = at.Add(time.Second)
+	now := at.Add(4097 * time.Second)
+	command := account.BookCommand{ID: fill.ID, Kind: "fill", At: now, Fill: &fill, Marks: marks}
+	next, e := p.ApplyCappedBook(ctx, cfg.ID, legacy.Version, command)
+	if e != nil {
+		t.Fatal("full legacy fill stranded", e)
+	}
+	snap, e := account.SnapshotCapped(next, marks, now)
+	if e != nil || snap.Positions["SPY"] != "0.000000000" || next.Version != 4097 || len(next.Events) > 8 {
+		t.Fatal("protective fill recovery", e)
+	}
+	cold, e := OpenPostgres(ctx, p.pool.Config().ConnString())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer cold.Close()
+	for _, reader := range []*Postgres{p, cold} {
+		got, e := reader.CappedBook(ctx, cfg.ID)
+		if e != nil || !reflect.DeepEqual(got, next) {
+			t.Fatal("warm/cold fill replay", e)
+		}
+	}
+	rebuilt, e := ReplayCappedBookHistory(ctx, p, cfg, next.Version)
+	if e != nil || !reflect.DeepEqual(rebuilt, next) {
+		t.Fatal("mixed original custody fill recovery", e)
+	}
+	originals, e := p.CappedBookHistory(ctx, cfg.ID, 4096, 1)
+	if e != nil || len(originals) != 1 || !sameCappedCommand(originals[0].Command, command) {
+		t.Fatal("original fill lost", e)
+	}
+	if _, e = p.ApplyCappedBook(ctx, cfg.ID, 0, command); e != nil {
+		t.Fatal("protective fill retry", e)
+	}
+	var retained int
+	if e = p.pool.QueryRow(ctx, `SELECT count(*) FROM mantik_capped_book_events WHERE book_id=$1`, cfg.ID).Scan(&retained); e != nil || retained != 4096 {
+		t.Fatal("legacy originals lost", retained, e)
+	}
+	t.Logf("4096 legacy originals retained; protective fill at 4097; %d hot slots; exact warm/cold/immutable recovery", len(next.Events))
 }

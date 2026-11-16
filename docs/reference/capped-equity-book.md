@@ -70,9 +70,13 @@ prefixes. Cold reads and restarts warm it from bounded custody pages; later
 reads verify only the unseen suffix. A fully warm read still fetches the SQL
 head and checks its original version and hash, without scanning old history.
 Transaction-local replay never publishes uncommitted state into that cache.
-Normal writes publish their derived projection only after commit. Submission
-and write fences reread and validate the current head while holding the book
-row; a cached older prefix cannot authorize that newer head.
+Collection and assessment writers share the same instance and compiled evaluator.
+They warm committed custody before opening their transaction, then recheck the
+current head under the book row lock. The shared custody writer leaves cache
+publication to a later committed read, so an enclosing rollback or failed commit
+cannot publish a collection or qualification grant.
+Submission and write fences reread and validate the current head while holding
+the book row; a cached older prefix cannot authorize that newer head.
 
 Warmup can exceed a request deadline for a long archive. The request then fails
 closed, with no partial-state response or submission authority. Fully verified
@@ -96,9 +100,11 @@ rolling source hash. Ordinary `ApplyCappedBook` commands cannot submit one.
 when walking an original-version boundary in the hot projection. Only the current trailing run
 can be folded: economic events, ownership, orders, deposits, fills, controls and
 prefixes already bound by review hashes stay in the hot projection. Legacy
-journals replay in their original representation until their next observation;
-new optional fields are omitted from legacy JSON. Scheduled deposits and other
-non-observation events still consume slots. Exhausting those slots or archive
+journals replay in their original representation until their next observation.
+A full legacy journal can also fold its trailing observations before retaining
+an executed fill or another protective command. New optional fields are omitted
+from legacy JSON. Scheduled deposits and other non-observation events still
+consume slots. Exhausting those slots or archive
 storage stops publication and requires retained-history review; this change
 does not provide indefinite economic-journal retention.
 

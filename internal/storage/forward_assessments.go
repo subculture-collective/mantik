@@ -178,6 +178,9 @@ func (p *Postgres) loadAssessmentPlan(ctx context.Context, q cappedQuery, id str
 
 // DeclareForwardAssessment retains an immutable plan without changing v1 bytes.
 func (p *Postgres) DeclareForwardAssessment(ctx context.Context, plan forward.AssessmentPlan, now func() time.Time) (forward.AssessmentPlanRecord, error) {
+	if _, e := p.ForwardDeclaration(ctx, plan.DeclarationID); e != nil {
+		return forward.AssessmentPlanRecord{}, e
+	}
 	tx, e := p.pool.Begin(ctx)
 	if e != nil {
 		return forward.AssessmentPlanRecord{}, e
@@ -228,6 +231,11 @@ func (p *Postgres) ForwardAssessmentPlan(ctx context.Context, id string) (forwar
 
 // AssessForward locks the book first and family second, matching allocation.
 func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time.Time) (forward.Assessment, error) {
+	// Warm committed custody before taking a connection or the final book fence.
+	// The transaction reload below must still verify the head under its row lock.
+	if _, e := p.ForwardAssessmentPlan(ctx, id); e != nil {
+		return forward.Assessment{}, e
+	}
 	tx, e := p.pool.Begin(ctx)
 	if e != nil {
 		return forward.Assessment{}, e

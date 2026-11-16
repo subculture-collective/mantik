@@ -192,6 +192,11 @@ type qualificationFenceStore struct {
 
 func (s *qualificationFenceStore) CheckCappedSubmission(ctx context.Context, id string, o account.BookOrder, marks map[string]string) (account.CappedState, error) {
 	if s.before != nil {
+		// Populate committed custody immediately before the competing writer. The
+		// final fence must reject current authority despite this warm cache.
+		if _, e := s.qualificationTestStore.CappedBook(ctx, id); e != nil {
+			return account.CappedState{}, e
+		}
 		f := s.before
 		s.before = nil
 		s.called = true
@@ -267,4 +272,8 @@ func TestQualificationPendingFamilyStillExits(t *testing.T) {
 }
 func TestPostgresContractsQualificationPendingFamilyStillExits(t *testing.T) {
 	TestQualificationPendingFamilyStillExits(t)
+}
+
+func TestPostgresContractsQualificationFencedOwnerKill(t *testing.T) {
+	TestQualificationRunnerCollectsDistinctEvidence(t)
 }

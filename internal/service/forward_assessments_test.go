@@ -92,16 +92,13 @@ func qualificationRunnerFixture(t *testing.T) (IncubationRunner, IncubationReque
 	req.Strategies[0].ForwardDeclarationID = d.ID
 	return r, req, s, b, d, p
 }
-func TestQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
+func collectQualificationRunnerEvidence(t *testing.T, r IncubationRunner, req IncubationRequest, b *incubationTestBroker, d forward.Declaration, p forward.AssessmentPlan, start time.Time) {
+	t.Helper()
 	ctx := context.Background()
-	r, req, _, b, d, p := qualificationRunnerFixture(t)
 	bid := d.Benchmark.StrategyID
-	sid := d.StrategyID
-	at := d.WindowStart.Add(-time.Second / 2)
-	fs := r.Store.(forward.AssessmentStore)
 	for day := range 6 {
 		for leg := range 2 {
-			next := nextForwardCycle(req, fmt.Sprintf("qual-%d-%d", day, leg), p.HoldoutStart.Add(time.Duration(day)*24*time.Hour+time.Duration(leg*15)*time.Second))
+			next := nextForwardCycle(req, fmt.Sprintf("qual-%d-%d", day, leg), start.Add(time.Duration(day)*24*time.Hour+time.Duration(leg*15)*time.Second))
 			point := forward.BenchmarkObservation{StrategyID: bid, Index: "100", EvidenceClass: "prospective_market_unqualified", ObservedAt: next.ExecuteAt, ReceivedAt: next.ExecuteAt}
 			point.Raw, _ = json.Marshal(struct {
 				StrategyID, Index, EvidenceClass string
@@ -157,6 +154,15 @@ func TestQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
+	ctx := context.Background()
+	r, req, _, b, d, p := qualificationRunnerFixture(t)
+	sid := d.StrategyID
+	at := d.WindowStart.Add(-time.Second / 2)
+	fs := r.Store.(forward.AssessmentStore)
+	collectQualificationRunnerEvidence(t, r, req, b, d, p, p.HoldoutStart)
 	// The start ledger is captured at assessment, not cached at declaration.
 	raw, _ := json.Marshal(d.Spec)
 	if _, e := r.Store.(strategytrial.Store).StartStrategyTrial(ctx, strategytrial.Start{ID: "actual-search", Family: d.Family, StrategyID: sid, Spec: raw, Config: json.RawMessage(`{"contract_fixture":true}`), DataSHA256: incubationDigest("trial-data"), EvidenceClass: "synthetic_fixture", StartedAt: at}); e != nil {
@@ -199,7 +205,11 @@ func TestQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				if _, e = owned.ApplyCappedBook(ctx, r.BookID, current.Version, account.BookCommand{ID: "late-owner-pause", Kind: "risk_control", At: next.ExecuteAt, RiskControl: &risk.Control{Action: "pause_strategy", StrategyID: sid}}); e != nil {
+				action := "pause_strategy"
+				if strings.Contains(t.Name(), "Kill") {
+					action = "kill"
+				}
+				if _, e = owned.ApplyCappedBook(ctx, r.BookID, current.Version, account.BookCommand{ID: "late-owner-control", Kind: "risk_control", At: next.ExecuteAt, RiskControl: &risk.Control{Action: action, StrategyID: sid}}); e != nil {
 					t.Fatal(e)
 				}
 			}

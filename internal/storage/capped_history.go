@@ -270,7 +270,9 @@ func (m *Memory) retainCappedLocked(before, after account.CappedState, c account
 }
 
 // retainCappedTx keeps the replay head and its original command in one transaction.
-// The caller holds the book row and any required family locks.
+// The caller holds the book row and any required family locks. Nothing is
+// published to the shared replay cache here: the enclosing commit can still fail.
+// A later committed read derives and caches the newly retained transition.
 func retainCappedTx(ctx context.Context, tx pgx.Tx, before, after account.CappedState, c account.BookCommand) error {
 	record, err := newCappedHistory(before, after, c)
 	if err != nil {
