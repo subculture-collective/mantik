@@ -135,3 +135,5 @@ callback. Protective reductions and reconciliation remain possible.
 Review never clears an owner pause, kill, retirement, reduce-only or hard halt.
 An already pending opening order is not automatically cancelled by review;
 reconciliation must resolve it before retirement can flatten the final holding.
+
+The [owner daily brief](daily-brief.md) reports retained actions and budgets separately. Its book TWR requires exact cash-flow-boundary valuations; review returns are never relabeled as TWR.

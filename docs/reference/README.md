@@ -136,3 +136,5 @@ Keep exploratory notes in `docs/research/` until they become stable references.
   declared tolerances, source discrepancies and qualification limits.
 - [Portfolio gates and risk](portfolio-gates-and-risk.md): immutable gate
   decisions, one sleeve-sizing authority and persistent capped-book risk checks.
+
+- [Owner daily brief](daily-brief.md) — finalized paper-book equity, evidence-bounded TWR, strategy actions, cash reasons, health and an explicit notification outbox.
