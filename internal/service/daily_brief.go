@@ -424,6 +424,10 @@ func BuildDailyBrief(source BriefSource, benchmark *BriefBenchmark) (DailyBrief,
 					v.State = "retired"
 				} else if r.Action == "demote" {
 					v.State = "review_quarantine"
+				} else if r.Action == "grow" && v.State == "review_quarantine" {
+					if scale, err := briefRat(r.Scale); err == nil && scale.Cmp(big.NewRat(1, 1)) >= 0 {
+						v.State = v.Stage
+					}
 				}
 			}
 		}
