@@ -31,15 +31,16 @@ A history prefix is never silently truncated to make a historical clock fit.
 The authenticated read operation is
 `POST /v1/capped-books/{book}/daily-brief-source`, with body `{}` or an object
 containing `AsOf`. It rejects query parameters, unknown fields and trailing JSON.
-It reads one complete ordered event prefix and immutable configuration. Both
-memory and PostgreSQL return detached records. SQL suppresses payloads over the
-remaining read budget before pgx receives them. Book reads are limited to 8 MiB;
+It reads the complete current replay projection and immutable configuration,
+including checkpoints when present. Both memory and PostgreSQL return detached
+records. SQL suppresses payloads over the read budget before pgx receives them. Book reads are limited to 8 MiB;
 separately clocked family evidence has a separate budget below 8 MiB. The entire
 source is limited to 16 MiB. Capacity failure returns unavailable/error, never a
 partial book. Timeouts and storage failures fail closed.
 
-The source freezes book version, configuration and every event ID, with a journal
-SHA-256 and a source SHA-256. It includes the exact gate records and sampled
+The source freezes the logical book version, configuration and every retained
+event ID, with a journal SHA-256 and a source SHA-256. Checkpoint counts and hashes
+bind folded observations; their original commands remain in immutable custody. It includes the exact gate records and sampled
 family search fences when the registry supports them. A pending family has no
 finite count. Each family's separately clocked count is sampled once per read,
 then reused for its sleeves. These observations are not a transaction across
@@ -168,3 +169,19 @@ client crashes before recording the acknowledgement, retry repeats that key.
 A 2xx proves receiver acceptance, not human reading. This implementation installs
 no timer and sends no external messages during verification. Owner walkthrough
 #100 and natural-window qualification #108 remain separate work.
+
+## Checkpoint-aware source reads
+
+The source freezes the complete current replay projection, including retained
+risk checkpoints, with its logical command version. A checkpoint represents
+multiple original risk observations; its hot event count is not the journal
+version. The brief validates the projection before deriving numbers and hashes
+its unchanged representation. It does not expand checkpoints into observations
+or replace original source custody.
+
+PostgreSQL reads the current head joined to its immutable transition digest and
+checks the digest, book identity, logical version and replay validity. It uses a
+read-only repeatable snapshot and falls back to legacy rows only when no current
+head exists. Oversized head or legacy payloads are suppressed in SQL before they
+reach the client. Both stores return a detached complete state or an error at the
+byte limit; a truncated book is never a brief source.

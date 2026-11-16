@@ -2,6 +2,7 @@ package account
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -153,5 +154,16 @@ func TestOwnerBookClearRefreshesRiskAndPreservesRetirement(t *testing.T) {
 	v, err := ReadOwnerBook(s, at)
 	if err != nil || v.Halted || !v.Risk.Retired["retired"] || !v.Risk.Kill {
 		t.Fatal(v, err)
+	}
+}
+
+func TestOwnerBookLogicalVersionConfirmationBounds(t *testing.T) {
+	for _, version := range []int64{-1, 0, 4095, 4096, 100000, math.MaxInt64 - 1, math.MaxInt64} {
+		a := OwnerBookAction{ExpectedVersion: version, Action: "owner_clear_halt"}
+		a.Confirmation = a.ConfirmationPin("book", "clear")
+		err := a.Validate("book", "clear")
+		if valid := version >= 0 && version < math.MaxInt64; valid != (err == nil) {
+			t.Fatalf("logical version %d: %v", version, err)
+		}
 	}
 }

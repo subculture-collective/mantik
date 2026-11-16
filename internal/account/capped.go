@@ -323,6 +323,7 @@ func replay(s CappedState) (*bookReplay, error) {
 	ids := map[string]bool{}
 	last := s.Config.OpenedAt
 	financialEvents := []BookCommand{}
+	var version int64
 	for _, c := range s.Events {
 		if c.RiskCheckpoint != nil && c.Kind != "risk_checkpoint" || c.Qualification != nil && c.Kind != "qualification" || c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && !IsStrategyPlan(c) || c.ModelFill != nil && c.Kind != "fill" {
 			return nil, errors.New("book payload differs from event kind")
@@ -331,10 +332,11 @@ func replay(s CappedState) (*bookReplay, error) {
 			return nil, ErrBookConflict
 		}
 		if c.OwnerAction != nil {
-			if e := validateOwnerEvent(s.Config, c, int64(len(ids))); e != nil {
+			if e := validateOwnerEvent(s.Config, c, version); e != nil {
 				return nil, e
 			}
 		}
+		version += CappedCommandCount(c)
 		ids[c.ID] = true
 		last = c.At
 		r.funds.Advance(civil(c.At))

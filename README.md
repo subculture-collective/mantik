@@ -259,6 +259,7 @@ Prospective strategy qualification uses [predeclared assessments](docs/reference
 Qualification collection is accepted only by the compiled durable collection
 path, which recomputes pinned inputs and decisions. Ordinary journal commands
 cannot supply collection authority; see [forward assessments](docs/reference/forward-assessments.md#durable-collection-authority).
+
 The [`book` terminal controls](docs/reference/owner-book-controls.md) show capped
 paper equity, sleeves, lifecycle and retained refusal reasons. The configured
 owner service session can confirm pause, permanent retirement, one real cash

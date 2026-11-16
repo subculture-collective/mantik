@@ -145,8 +145,21 @@ that the owner has performed or accepted this checkpoint.
 
 No schema migration is required: optional owner terms are retained in existing
 JSON journal payloads, omitted from legacy events. The optional immutable funding
-mode is retained in the existing configuration JSON, omitted from legacy configs. No hardcoded migration maximum
-is introduced. Journal repair and qualification joins remain separate work;
-this adds no admission or safety-contract exemption. The coordinator must run
-combined verification after integrating those changes. No host/timer/runtime
-configuration or deployment is part of this implementation.
+mode is retained in the existing configuration JSON, omitted from legacy configs.
+No hardcoded migration maximum is introduced. The checkpoint and assessment
+contracts remain independent of owner authority; this adds no admission or
+safety-contract exemption. The coordinator owns combined repository verification
+and hosted checks. No host/timer/runtime configuration or deployment is part of
+this implementation.
+
+## Logical versions after risk checkpoints
+
+Confirmation pins bind the original-command version, including observations
+folded into retained risk checkpoints. The 4096 hot-event limit does not cap the
+owner's expected version. Replay validates each action against the logical
+prefix, and exact retries return the original logical applied version alongside
+current controls. A newer halt therefore stays visible after retrying an older
+clear. A stale version under a new action ID requires a fresh confirmation.
+
+The human owner terminal walkthrough remains **UNPERFORMED**. Automated terminal,
+authentication, checkpoint and retry contracts do not complete that checkpoint.

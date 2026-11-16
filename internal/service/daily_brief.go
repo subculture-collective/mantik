@@ -314,7 +314,7 @@ func BuildDailyBrief(source BriefSource, benchmark *BriefBenchmark) (DailyBrief,
 	if frozen.CapturedAt.Before(frozen.AsOf) {
 		return DailyBrief{}, errors.New("capture precedes valuation clock")
 	}
-	if frozen.AsOf.IsZero() || b.Version != int64(len(b.Events)) {
+	if frozen.AsOf.IsZero() {
 		return DailyBrief{}, errors.New("invalid finalized brief prefix")
 	}
 	view, roster, e := account.BriefBookView(b, frozen.AsOf)

@@ -96,14 +96,16 @@ func applyOwnerBookAction(ctx context.Context, s storage.CappedBookStore, book, 
 	}
 	var cmd *account.BookCommand
 	applied := int64(0)
-	for i, event := range b.Events {
+	var sequence int64
+	for _, event := range b.Events {
+		sequence += account.CappedCommandCount(event)
 		if event.ID == id {
 			if event.OwnerAction == nil || !reflect.DeepEqual(*event.OwnerAction, in) {
 				return OwnerBookReceipt{}, account.ErrBookConflict
 			}
 			copy := event
 			cmd = &copy
-			applied = int64(i + 1)
+			applied = sequence
 			break
 		}
 	}

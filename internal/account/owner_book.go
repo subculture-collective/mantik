@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -40,7 +41,7 @@ func (a OwnerBookAction) ConfirmationPin(book, id string) string {
 
 // Validate checks supported terms and explicit confirmation without granting authority.
 func (a OwnerBookAction) Validate(book, id string) error {
-	if a.ConfirmationPin(book, id) == "" || !bookID.MatchString(book) || !bookID.MatchString(id) || a.ExpectedVersion < 0 || a.ExpectedVersion >= 4096 || a.Confirmation != a.ConfirmationPin(book, id) {
+	if a.ConfirmationPin(book, id) == "" || !bookID.MatchString(book) || !bookID.MatchString(id) || a.ExpectedVersion < 0 || a.ExpectedVersion == math.MaxInt64 || a.Confirmation != a.ConfirmationPin(book, id) {
 		return errors.New("invalid owner action identity, version or confirmation")
 	}
 	switch a.Action {

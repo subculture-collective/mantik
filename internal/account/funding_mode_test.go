@@ -14,6 +14,14 @@ func TestCappedFundingModeLegacyJSONAndValidation(t *testing.T) {
 	if err != nil || string(raw) != legacy {
 		t.Fatal("default legacy config bytes changed", string(raw), err)
 	}
+	state, err := NewCappedState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := json.Marshal(state)
+	if err != nil || string(empty) != `{"Config":`+legacy+`,"Version":0,"Events":[]}` {
+		t.Fatal("empty legacy state bytes/hash changed", string(empty), err)
+	}
 	for _, mode := range []string{"", SyntheticSchedule, OwnerReceipts} {
 		copy := cfg
 		copy.FundingMode = mode
