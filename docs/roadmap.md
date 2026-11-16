@@ -54,6 +54,15 @@ OptionBook lifecycle with reserves and holding-time Greek checks. Their
 synthetic lifecycle tests do not satisfy #101's historical 2024-onward data
 requirement or #85's real paper open/close requirement.
 
+The [daily brief](reference/daily-brief.md) for #99 derives its numbers from
+finalized records and retains notification retry receipts. The
+[owner terminal controls](reference/owner-book-controls.md) for #100 require
+authenticated confirmation and report the original action receipt alongside
+current state. Both paths preserve logical journal versions after checkpoints
+and use verified original-command replay for SQL views. Receipt-mode books
+require an owner attestation for each deposit and receive no automatic credit
+for elapsed schedule dates. The actual owner walkthrough remains unperformed.
+
 Wave 5 adds the opt-in [daily-bar worker](reference/daily-bars-worker.md) for
 #95 and the [independent SPY comparison](reference/spy-comparison.md) for #94
 in one reviewable change. The connected collector check uses disposable storage.
@@ -189,7 +198,7 @@ current blockers before starting work.
 | --- | --- |
 | [J2 #92](https://github.com/subculture-collective/mantik/issues/92) Prospective assessments | Declarations and review prerequisites are merged; verify compiled collection, automatic promotion/demotion and legacy replay in the combined journal. |
 | [G3 #85](https://github.com/subculture-collective/mantik/issues/85) Multi-leg paper orders | After #84: durable open/close and safe fallback; record an actual paper iron-condor open and close. |
-| [F3 #99](https://github.com/subculture-collective/mantik/issues/99), [F4 #100](https://github.com/subculture-collective/mantik/issues/100) Brief and owner controls | Join finalized reporting and confirmed authenticated controls to logical journal versions; retain the actual terminal walkthrough checkpoint. |
+| [F3 #99](https://github.com/subculture-collective/mantik/issues/99), [F4 #100](https://github.com/subculture-collective/mantik/issues/100) Brief and owner controls | Verify finalized reporting, bounded source reads and confirmed controls in the combined journal; retain the actual terminal walkthrough checkpoint. |
 | [H4 #93](https://github.com/subculture-collective/mantik/issues/93) Model analyst | Evolution is merged. Finish exact-head verification of the analyst and retained receipt bridge, keeping model choices under coded sizing and risk authority. |
 | [G4 #101](https://github.com/subculture-collective/mantik/issues/101), [G5 #102](https://github.com/subculture-collective/mantik/issues/102) Option recipes | After #84: reviewed provenance, cash/margin permissions and tested strategy behavior; #101 also requires its historical indicative-data backtest. |
 | [E6 #107](https://github.com/subculture-collective/mantik/issues/107) Protected paper positions | Requires eligible strategies, fresh regular-session quotes, protected execution and owned-fill reconciliation. |

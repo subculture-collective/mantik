@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
-	"github.com/jackc/pgx/v5"
 )
 
 // ErrCappedReadCapacity means a read cannot return a complete bounded prefix.
@@ -92,83 +91,13 @@ func (m *Memory) CappedBookBounded(ctx context.Context, id string, max int) (acc
 	return out, nil
 }
 
-// CappedBookBounded reads a verified current head, or a complete legacy stream
-// when no head exists. A read-only repeatable snapshot prevents a concurrent
-// legacy-to-head transition from returning stale legacy state. SQL suppresses
-// oversized payloads before they enter pgx buffers; no partial state is returned.
+// CappedBookBounded pins one source-bound version and verifies its original
+// command transitions through the same reader as operational admission. SQL
+// suppresses oversized config/head bytes before pgx receives them. Immutable
+// archive pages preserve that pinned version across concurrent appends.
 func (p *Postgres) CappedBookBounded(ctx context.Context, id string, max int) (account.CappedState, error) {
 	if max < 1 {
 		return account.CappedState{}, ErrCappedReadCapacity
 	}
-	tx, e := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	var raw []byte
-	var version int64
-	var digest string
-	e = tx.QueryRow(ctx, `SELECT CASE WHEN octet_length(h.state::text)<=$2 THEN h.state ELSE NULL END,h.version,j.state_sha256
- FROM mantik_capped_book_heads h JOIN mantik_capped_book_history j
- ON j.book_id=h.book_id AND j.sequence=h.version AND j.state_sha256=h.state_sha256
- WHERE h.book_id=$1`, id, max).Scan(&raw, &version, &digest)
-	if e == nil {
-		if len(raw) == 0 {
-			return account.CappedState{}, ErrCappedReadCapacity
-		}
-		var out account.CappedState
-		if cappedDigest(raw) != digest || json.Unmarshal(raw, &out) != nil || out.Config.ID != id || out.Version != version {
-			return account.CappedState{}, account.ErrBookConflict
-		}
-		if e = account.ValidateCappedState(out); e != nil {
-			return account.CappedState{}, e
-		}
-		return out, nil
-	}
-	if !errors.Is(e, pgx.ErrNoRows) {
-		return account.CappedState{}, e
-	}
-	// A corrupt/missing custody join must not downgrade to legacy state.
-	var hasHead bool
-	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mantik_capped_book_heads WHERE book_id=$1)`, id).Scan(&hasHead); e != nil {
-		return account.CappedState{}, e
-	}
-	if hasHead {
-		return account.CappedState{}, account.ErrBookConflict
-	}
-	e = tx.QueryRow(ctx, `SELECT CASE WHEN octet_length(config::text)<=$2 THEN config ELSE NULL END FROM mantik_capped_books WHERE id=$1`, id, max).Scan(&raw)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return account.CappedState{}, account.ErrBookNotFound
-	}
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	out, e := cappedReadConfig(raw, max)
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	remaining := max - len(raw) - 128
-	if remaining < 0 {
-		return account.CappedState{}, ErrCappedReadCapacity
-	}
-	rows, e := tx.Query(ctx, `SELECT CASE WHEN sum(octet_length(payload::text)+2) OVER (ORDER BY sequence ROWS UNBOUNDED PRECEDING)<=$2 THEN payload ELSE NULL END FROM mantik_capped_book_events WHERE book_id=$1 ORDER BY sequence LIMIT 4097`, id, remaining)
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if e = rows.Scan(&raw); e != nil {
-			return account.CappedState{}, e
-		}
-		if e = appendCappedRead(&out, raw, &remaining); e != nil {
-			return account.CappedState{}, e
-		}
-	}
-	if e = rows.Err(); e != nil {
-		return account.CappedState{}, e
-	}
-	if e = account.ValidateCappedState(out); e != nil {
-		return account.CappedState{}, e
-	}
-	return out, nil
+	return p.loadCappedBounded(ctx, p.pool, id, max)
 }

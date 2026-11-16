@@ -134,6 +134,9 @@ func TestPostgresContractsCappedReplayRejectsRestrictedWriterForgery(t *testing.
 	}
 	defer reopened.Close()
 	for _, reader := range []*Postgres{p, reopened} {
+		if got, e := reader.CappedBookBounded(ctx, s.Config.ID, 1<<20); !errors.Is(e, account.ErrBookConflict) || got.Version != 0 {
+			t.Fatal("forged head entered bounded owner read", got.Version, e)
+		}
 		if got, e := reader.CappedBook(ctx, s.Config.ID); !errors.Is(e, account.ErrBookConflict) || got.Version != 0 {
 			t.Fatal("forged head entered operational read", got.Version, e)
 		}

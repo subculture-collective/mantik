@@ -57,20 +57,37 @@ func (e *cappedReplayEntry) snapshot() ([]byte, int64, bool) {
 // for that exact source-bound version/hash; a verified older prefix is only a
 // starting point for replay, never admission authority for a newer SQL head.
 func (p *Postgres) loadCapped(ctx context.Context, q cappedQuery, id string) (account.CappedState, error) {
+	return p.loadCappedBounded(ctx, q, id, 0)
+}
+
+// A positive max bounds the returned projection before config/head bytes enter
+// pgx. Archive verification remains paged and can resume from verified progress.
+// Zero retains the internal command path's existing unbounded projection read.
+func (p *Postgres) loadCappedBounded(ctx context.Context, q cappedQuery, id string, max int) (account.CappedState, error) {
 	var config, head []byte
 	var version int64
 	var headSHA, sourceSHA string
-	err := q.QueryRow(ctx, `SELECT b.config,
+	var oversized bool
+	err := q.QueryRow(ctx, `SELECT
+ CASE WHEN $2::bigint<=0 OR octet_length(b.config::text)<=$2 THEN b.config ELSE NULL END,
  coalesce(h.version,(SELECT coalesce(max(sequence),0) FROM mantik_capped_book_events WHERE book_id=b.id)),
- h.state,coalesce(h.state_sha256,''),coalesce(j.state_sha256,'')
+ CASE WHEN $2<=0 OR octet_length(h.state::text)<=$2 THEN h.state ELSE NULL END,
+ coalesce(h.state_sha256,''),coalesce(j.state_sha256,''),
+ $2>0 AND (octet_length(b.config::text)>$2 OR
+ CASE WHEN h.book_id IS NOT NULL THEN octet_length(h.state::text)>$2
+ ELSE octet_length(b.config::text)+128+
+ (SELECT coalesce(sum(octet_length(payload::text)+2),0) FROM mantik_capped_book_events WHERE book_id=b.id)>$2 END)
  FROM mantik_capped_books b LEFT JOIN mantik_capped_book_heads h ON h.book_id=b.id
  LEFT JOIN mantik_capped_book_history j ON j.book_id=h.book_id AND j.sequence=h.version
- WHERE b.id=$1`, id).Scan(&config, &version, &head, &headSHA, &sourceSHA)
+ WHERE b.id=$1`, id, int64(max)).Scan(&config, &version, &head, &headSHA, &sourceSHA, &oversized)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return account.CappedState{}, account.ErrBookNotFound
 	}
 	if err != nil {
 		return account.CappedState{}, err
+	}
+	if oversized {
+		return account.CappedState{}, ErrCappedReadCapacity
 	}
 	if version < 0 || head != nil && (headSHA != sourceSHA || cappedDigest(head) != headSHA) {
 		return account.CappedState{}, account.ErrBookConflict

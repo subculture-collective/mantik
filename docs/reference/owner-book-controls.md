@@ -163,3 +163,9 @@ clear. A stale version under a new action ID requires a fresh confirmation.
 
 The human owner terminal walkthrough remains **UNPERFORMED**. Automated terminal,
 authentication, checkpoint and retry contracts do not complete that checkpoint.
+
+Bounded owner views use the same original-command verification as operational
+SQL reads. A head with publisher-chosen matching hashes cannot rewrite a prior
+owner control in the displayed state. The byte budget is checked in SQL before
+configuration or head bytes reach the client, and an unavailable or over-budget
+read returns no partial owner view.

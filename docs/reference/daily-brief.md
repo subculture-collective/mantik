@@ -179,9 +179,12 @@ version. The brief validates the projection before deriving numbers and hashes
 its unchanged representation. It does not expand checkpoints into observations
 or replace original source custody.
 
-PostgreSQL reads the current head joined to its immutable transition digest and
-checks the digest, book identity, logical version and replay validity. It uses a
-read-only repeatable snapshot and falls back to legacy rows only when no current
-head exists. Oversized head or legacy payloads are suppressed in SQL before they
-reach the client. Both stores return a detached complete state or an error at the
-byte limit; a truncated book is never a brief source.
+PostgreSQL pins the current version and source hash, then verifies the original
+commands using the same replay reader as operational admission. Matching
+writer-chosen head and receipt hashes alone cannot establish that history.
+The immutable command pages preserve the selected version across concurrent
+appends. Verified committed prefixes can warm the private cache; a deadline
+returns no partial book or authority. SQL checks the projection byte budget
+before returning configuration or head bytes to the client. Both stores return
+a detached complete state or an error at the byte limit; a truncated book is
+never a brief source.
