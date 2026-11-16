@@ -2,7 +2,9 @@ package research
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -12,8 +14,11 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/migrations"
 )
 
-func TestPostgresDeskContracts(t *testing.T) {
+func TestPostgresContractsResearchDesk(t *testing.T) {
 	dsn := os.Getenv("MANTIK_DESK_TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("MANTIK_TEST_DATABASE_URL")
+	}
 	if dsn == "" {
 		t.Skip("new disposable database required")
 	}
@@ -28,6 +33,10 @@ func TestPostgresDeskContracts(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer j.Close()
+	var digest string
+	if e = j.pool.QueryRow(ctx, "SELECT sha256 FROM mantik_schema WHERE version=123").Scan(&digest); e != nil || digest != fmt.Sprintf("%x", sha256.Sum256([]byte(migrations.ResearchDeskEvents))) {
+		t.Fatal("desk migration missing from bootstrap registry", digest, e)
+	}
 	d := fixture()
 	d.ID = "sql-desk-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	d.MaxCalls = 3

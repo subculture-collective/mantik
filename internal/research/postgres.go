@@ -9,7 +9,6 @@ import (
 	"errors"
 	"time"
 
-	"git.subcult.tv/subculture-collective/mantik/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,7 +16,7 @@ import (
 type PostgresJournal struct{ pool *pgxpool.Pool }
 
 // OpenPostgresJournal opens the desk journal in an explicit disposable/bootstrap
-// database. Schema installation is serialized and replay-safe.
+// database after storage.OpenPostgres has installed the bootstrap migrations.
 func OpenPostgresJournal(ctx context.Context, dsn string) (*PostgresJournal, error) {
 	cfg, e := pgxpool.ParseConfig(dsn)
 	if e != nil {
@@ -33,25 +32,10 @@ func OpenPostgresJournal(ctx context.Context, dsn string) (*PostgresJournal, err
 	if e != nil {
 		return nil, errors.New("cannot open desk journal")
 	}
-	tx, e := p.Begin(ctx)
-	if e != nil {
+	var installed bool
+	if e = p.QueryRow(ctx, "SELECT to_regclass('public.mantik_research_desk_events') IS NOT NULL").Scan(&installed); e != nil || !installed {
 		p.Close()
-		return nil, errors.New("cannot open desk transaction")
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	fail := func() (*PostgresJournal, error) {
-		_ = tx.Rollback(context.Background())
-		p.Close()
-		return nil, errors.New("cannot install research desk journal")
-	}
-	if _, e = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71423125)"); e != nil {
-		return fail()
-	}
-	if _, e = tx.Exec(ctx, migrations.ResearchDeskEvents); e != nil {
-		return fail()
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return fail()
+		return nil, errors.New("research desk requires initialized bootstrap storage")
 	}
 	return &PostgresJournal{pool: p}, nil
 }

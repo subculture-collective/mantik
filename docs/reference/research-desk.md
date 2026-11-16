@@ -104,12 +104,11 @@ different model cutoff. Evolution across sessions remains separate work.
 
 ## Durability and recovery
 
-`0125_research_desk_events.sql` is the provisional Wave10 migration reservation.
-`migrations.ResearchDeskEvents` is installed by `research.OpenPostgresJournal`
-under a schema lock, separately from the sequential bootstrap migration list.
-This avoids consuming sibling reservations 0123/0124. The coordinator should
-reconcile numbering and migration ownership before the combined Wave10 PR.
-No Makefile change is needed.
+`0123_research_desk_events.sql` is installed by the normal storage bootstrap
+under its migration lock and recorded in `mantik_schema`. The CLI opens that
+storage before opening the research journal. `research.OpenPostgresJournal`
+requires an initialized schema and performs no independent DDL. The migration
+can be replayed while retaining existing events.
 
 The append-only SQL journal retains the declaration, a call intent before each
 subscription launch, exact successful reply text before dispatch, each tool
@@ -142,8 +141,10 @@ Focused tests cover invalid and failed attempts, unsupported money tools,
 post-cutoff warm-up and adjustment bounds, future clocks, trigger receipt
 binding, scoped gate reads, call limits and recovery without relaunch.
 Run `mise exec -- go test -race ./internal/research ./internal/model` with
-`GOFLAGS=-p=2 GOMAXPROCS=2`. `TestPostgresDeskContracts` additionally requires
-`MANTIK_DESK_TEST_DATABASE_URL` pointing at a newly created disposable database;
+`GOFLAGS=-p=2 GOMAXPROCS=2`. `TestPostgresContractsResearchDesk` runs in the
+existing disposable CLI integration shards through `make test-integration`.
+For a focused run, `MANTIK_TEST_DATABASE_URL` (or `MANTIK_DESK_TEST_DATABASE_URL`)
+must point at a newly created disposable database;
 it checks SQL immutability, migration replay, restart identity and session
 fencing. The combined Wave10 owner runs full `make verify`, repository race and
 integration checks after composing the sibling changes.

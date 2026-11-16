@@ -1,5 +1,4 @@
--- Provisional Wave10 reservation; lazy-installed by the research desk journal.
--- The coordinator reconciles global migration numbering before the combined PR.
+-- Immutable research-desk sessions; installed by the storage bootstrap.
 CREATE TABLE IF NOT EXISTS mantik_research_desk_events (
  session_id text NOT NULL CHECK (session_id ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$'),
  sequence integer NOT NULL CHECK (sequence BETWEEN 0 AND 49),
