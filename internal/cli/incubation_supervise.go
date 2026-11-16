@@ -128,7 +128,7 @@ func runIncubationSupervision(ctx context.Context, runner service.IncubationRunn
 				lastInput = req.InputSHA256
 			}
 		}
-		if err := (service.WallClock{}).Wait(ctx, interval); err != nil {
+		if err := (service.WallClock{}).Wait(ctx, 250*time.Millisecond); err != nil {
 			break
 		}
 	}

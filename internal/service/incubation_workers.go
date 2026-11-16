@@ -393,13 +393,37 @@ func (w *IncubationSafetyWorker) cycle(ctx context.Context, clock Clock) (accoun
 	// the runner from attempting those independent protective exits.
 	// Execution quotes must be collected after the finalized protective
 	// decision, just as in a normal incubation cycle.
-	quotes, err = w.source.Quotes(ctx, slices.Clone(w.policy.Symbols), clock.Now())
-	if err != nil {
-		return state, err
-	}
-	executionAt := clock.Now()
-	if !executionAt.After(at) {
-		return state, errors.New("safety execution clock has not advanced")
+	// Freeze the protective decision while a file/stream collector supplies a
+	// genuinely newer observation. Re-reading its current snapshot is not a fill.
+	quoteCtx, cancelQuotes := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelQuotes()
+	var executionAt time.Time
+	for {
+		quotes, err = w.source.Quotes(quoteCtx, slices.Clone(w.policy.Symbols), clock.Now())
+		if err != nil {
+			return state, err
+		}
+		executionAt = clock.Now()
+		postDecision := executionAt.After(at)
+		for _, symbol := range w.policy.Symbols {
+			q, ok := quotes[symbol]
+			if !ok || q.Symbol != symbol {
+				return state, errors.New("protective execution quote missing or misbound")
+			}
+			if !q.OccurredAt.After(at) {
+				postDecision = false
+				continue
+			}
+			if err = account.ValidateIncubationQuote(q, at, executionAt); err != nil {
+				return state, err
+			}
+		}
+		if postDecision {
+			break
+		}
+		if err = clock.Wait(quoteCtx, 100*time.Millisecond); err != nil {
+			return state, err
+		}
 	}
 	limits := map[string]string{}
 	raw, err := json.Marshal(struct {

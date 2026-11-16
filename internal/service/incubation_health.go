@@ -371,31 +371,15 @@ func (r IncubationRunner) checkHealthSubmission(ctx context.Context, o alpaca.St
 		report.Checks["worker_liveness"] = workers
 		*observed = report
 	}
-	if !order.ReduceOnly {
-		// Reservations do not authorize a later POST after research changes.
-		// Reductions and GET-only recovery require no renewed family admission.
-		for _, sleeve := range plan.Rebalance.Sleeves {
-			if sleeve.ID != order.SleeveID {
-				continue
-			}
-			gate, e := r.Store.StrategyGate(ctx, sleeve.GateID)
-			if e != nil {
-				return e
-			}
-			if gate.Decision == nil || gate.Decision.StrategyID != order.StrategyID || !gate.Decision.AdmitsIncubation() {
-				return fmt.Errorf("incubation_gate_required")
-			}
-			n, e := r.Store.StrategyTrialSearchTotal(ctx, gate.Declaration.Family)
-			if e != nil {
-				return e
-			}
-			if n != gate.Decision.SearchTotal {
-				return fmt.Errorf("gate_search_history_changed")
-			}
-		}
+	// One storage fence reads both current owner controls and admission. No
+	// further database read may follow this snapshot before the final checks.
+	state, err = r.Store.CheckCappedSubmission(ctx, r.BookID, *order, marks)
+	if err != nil {
+		return err
 	}
+
 	if !order.ReduceOnly {
-		// Family reads can block too. Inspect the worker again without I/O before
+		// The final storage fence can block too. Inspect the worker without I/O before
 		// admitting the POST, retaining the earlier forward-deadline bound.
 		live := r.Safety.coverageSnapshot(r.Store, state, r.clockNow(), marks)
 		if !live.Ready {

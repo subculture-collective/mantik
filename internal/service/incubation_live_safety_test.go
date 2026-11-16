@@ -2,10 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
+	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
+	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -193,4 +199,97 @@ func TestIncubationSafetyPendingFamilyStillDeliversExit(t *testing.T) {
 	if check := r.Safety.coverage(r.Store, state, clock.Now(), incubationMarks(req.Quotes)); check.Ready {
 		t.Fatal("unfilled exit reported as completed protection", check)
 	}
+}
+
+type acceptance38LateOwnerStore struct {
+	*storage.Memory
+	armed  bool
+	loads  int
+	inject func()
+}
+
+func (s *acceptance38LateOwnerStore) CappedBook(ctx context.Context, id string) (account.CappedState, error) {
+	if s.armed {
+		s.loads++
+	}
+	return s.Memory.CappedBook(ctx, id)
+}
+func (s *acceptance38LateOwnerStore) ForwardDeclaration(ctx context.Context, id string) (forward.Record, error) {
+	if s.armed && s.loads >= 2 {
+		s.armed = false
+		s.inject()
+	}
+	return s.Memory.ForwardDeclaration(ctx, id)
+}
+
+func TestIncubationAtomicOwnerRetirementDuringCoverageRead(t *testing.T) {
+	ctx := context.Background()
+	r, req, _, _, _ := forwardRunnerFixture(t)
+	m := r.Store.(*storage.Memory)
+	store := &acceptance38LateOwnerStore{Memory: m}
+	r.Store = store
+	r.Safety = startIncubationTestSafety(t, r, req.DecidedAt)
+	sid, _ := req.Strategies[0].Strategy.Spec().ID()
+	committed := false
+	store.inject = func() {
+		state, err := m.CappedBook(ctx, r.BookID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = m.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: "owner-retired-during-coverage", Kind: "risk_control", At: req.ExecuteAt, RiskControl: &risk.Control{Action: "retire_strategy", StrategyID: sid}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		committed = true
+	}
+	posts := 0
+	old := httpDefaultAcceptance38(t, func() { store.armed = true }, &posts)
+	r.Broker = old
+	_, err := r.Run(ctx, req)
+	state, loadErr := m.CappedBook(ctx, r.BookID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	snap, snapErr := account.SnapshotCapped(state, incubationMarks(req.Quotes), req.ExecuteAt)
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	t.Logf("actual-adapter POSTs=%d committed-retirement=%v retained-retired=%v final-loads=%d err=%v", posts, committed, snap.Risk.Retired[sid], store.loads, err)
+	if !committed {
+		t.Fatal("injection not reached")
+	}
+	if posts != 0 {
+		t.Fatal("opening POST after retirement committed during final coverage read")
+	}
+}
+
+// Use the real adapter, with every HTTP request intercepted in process.
+func httpDefaultAcceptance38(t *testing.T, arm func(), posts *int) *alpaca.PaperTrader {
+	t.Helper()
+	old := http.DefaultTransport
+	http.DefaultTransport = incubationTransport(func(h *http.Request) (*http.Response, error) {
+		raw := ""
+		switch h.URL.Path {
+		case "/v2/account/activities/FILL":
+			raw = `[]`
+		case "/v2/account":
+			raw = `{"id":"paper-fixture","status":"ACTIVE"}`
+		case "/v2/assets/SPY":
+			arm()
+			raw = `{"symbol":"SPY","class":"us_equity","tradable":true}`
+		case "/v2/orders":
+			*posts++
+			var o alpaca.StockOrder
+			if err := json.NewDecoder(h.Body).Decode(&o); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := json.Marshal(alpaca.PaperOrder{ID: "venue-fixture", ClientOrderID: o.ClientOrderID, Symbol: o.Symbol, Qty: o.Qty, Side: o.Side, Type: o.Type, TimeInForce: o.TimeInForce, LimitPrice: o.LimitPrice, Status: "new", FilledQty: "0"})
+			raw = string(b)
+		default:
+			t.Fatalf("unexpected intercepted request %s", h.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(raw))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	return review90NewTrader(t)
 }

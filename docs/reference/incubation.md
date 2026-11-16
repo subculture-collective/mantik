@@ -146,7 +146,11 @@ review and forward-outcome deadlines. When protection is due, it conservatively
 flattens retained sleeves through the existing reduce-only runner without
 calling strategy/model code. Protective limits include the most adverse retained
 cost model and round down to ledger precision. Missing observations keep the
-cycle unsuccessful. When protection is due, unresolved opening orders or pending
+cycle unsuccessful. Protective work freezes its decision clock and waits up to
+ten seconds, with cancellation, for a genuinely newer execution observation. A
+collector may refresh the same quote file during that wait; rereading an older
+snapshot cannot execute an exit or silently move the decision clock.
+When protection is due, unresolved opening orders or pending
 exits also prevent success; an accepted exit is not fulfillment. This broker contract cannot cancel outstanding opening
 orders. It retains their reservations and continues reconciliation rather than
 claiming protection or releasing capital. Successful evidence expires after the
@@ -156,6 +160,9 @@ cancellation. These are service contract tests, not real-paper protection or
 qualification evidence.
 
 The final adapter check reloads live worker coverage after blocking reads.
+It then checks current owner controls, the exact retained reservation and family
+admission together under the book/family storage fence. No further database read
+follows that snapshot; the live worker and execution clocks are checked again.
 Cancellation or a failed cycle withdraws that coverage immediately. Coverage
 also checks every retained exposed sleeve's forward holding and outcome clocks,
 including sleeves unrelated to the proposed order, and expires at the earliest

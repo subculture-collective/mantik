@@ -29,6 +29,7 @@ var incubationCycleID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,59}$`)
 // IncubationStore adds authoritative gates to the existing book journal.
 type IncubationStore interface {
 	storage.CappedBookStore
+	CheckCappedSubmission(context.Context, string, account.BookOrder, map[string]string) (account.CappedState, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
 	StrategyGate(context.Context, string) (strategygate.Record, error)
 	StrategyTrialSearchTotal(context.Context, string) (int64, error)
