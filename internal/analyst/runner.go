@@ -116,7 +116,16 @@ func view(ctx context.Context, q Request) (strategy.View, error) {
 	if e != nil {
 		return strategy.View{}, e
 	}
-	return strategy.Build(ctx, spec, q.Data, q.AsOf, q.Config.Assets, strategy.Book{})
+	v, e := strategy.Build(ctx, spec, q.Data, q.AsOf, q.Config.Assets, strategy.Book{})
+	if e != nil {
+		return strategy.View{}, e
+	}
+	for _, asset := range v.Assets() {
+		if len(v.Bars(asset)) == 0 {
+			return strategy.View{}, errors.New("analyst asset has no visible bars")
+		}
+	}
+	return v, nil
 }
 
 // admission reads current declarations, family accounting, and the capped book.

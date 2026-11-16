@@ -296,6 +296,7 @@ func TestCutoffAndEvidenceValidation(t *testing.T) {
 		"backdated_availability": func(q *Request) { q.Data.Bars[0].AvailableAt = q.Data.Bars[0].ObservedAt.Add(-time.Second) },
 		"duplicate_bar":          func(q *Request) { q.Data.Bars = append(q.Data.Bars, q.Data.Bars[0]) },
 		"missing_asset":          func(q *Request) { q.Data.Bars = nil },
+		"missing_asset_bars":     func(q *Request) { q.Config.Assets = append(q.Config.Assets, "QQQ") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, q, _, _, c := fixture(t, "1")
