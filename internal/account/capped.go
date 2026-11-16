@@ -8,6 +8,9 @@ import (
 	"slices"
 	"time"
 	_ "time/tzdata"
+
+	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
+	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 )
 
 var (
@@ -33,6 +36,7 @@ type CappedConfig struct {
 // a conservative total fee reserve. Only these recorded client IDs own fills.
 type BookOrder struct {
 	ID, Symbol, Quantity, Limit, Side, Fee string
+	AllocationID, SleeveID, StrategyID     string
 	At                                     time.Time
 }
 
@@ -51,6 +55,8 @@ type BookCommand struct {
 	Order                                   *BookOrder
 	Fill                                    *BookFill
 	Marks                                   map[string]string
+	Rebalance                               *allocation.RebalanceRequest
+	RiskControl                             *risk.Control
 }
 
 // CappedState is an append-only replayable ledger. Version is its event count.
@@ -68,6 +74,8 @@ type CappedSnapshot struct {
 	Pending                   []BookOrder
 	Deposits                  int
 	Halted                    bool
+	Risk                      risk.State
+	Distribution              *allocation.Distribution
 }
 type openOrder struct {
 	order       BookOrder
@@ -76,11 +84,13 @@ type openOrder struct {
 	released    bool
 }
 type bookReplay struct {
-	funds     *Book
-	positions map[string]*big.Rat
-	orders    map[string]*openOrder
-	deposits  int
-	halted    bool
+	funds        *Book
+	positions    map[string]*big.Rat
+	orders       map[string]*openOrder
+	deposits     int
+	halted       bool
+	risk         risk.State
+	distribution *allocation.Distribution
 }
 
 func bookRat(s string) (*big.Rat, error) {
@@ -309,8 +319,41 @@ func replay(s CappedState) (*bookReplay, error) {
 				return nil, err
 			}
 			r.deposits++
-		case "reserve":
-			if r.halted || c.Order == nil {
+		case "risk_observe":
+			if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
+				return nil, e
+			}
+		case "risk_control":
+			if c.RiskControl == nil {
+				return nil, errors.New("missing risk control")
+			}
+			if c.Marks != nil {
+				if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
+					return nil, e
+				}
+			}
+			var e error
+			r.risk, e = risk.ApplyControl(r.risk, *c.RiskControl)
+			if e != nil {
+				return nil, e
+			}
+			if c.RiskControl.Action == "owner_clear_halt" {
+				r.halted = false
+			}
+		case "rebalance":
+			if c.Rebalance == nil || c.Rebalance.ID != c.ID || !c.Rebalance.At.Equal(c.At) {
+				return nil, errors.New("invalid rebalance command")
+			}
+			if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
+				return nil, e
+			}
+			v, e := allocation.Distribute(*c.Rebalance, sizingSnapshot(r, c.Marks))
+			if e != nil {
+				return nil, e
+			}
+			r.distribution = &v
+		case "reserve", "portfolio_reserve":
+			if r.halted && c.Kind == "reserve" || c.Order == nil {
 				return nil, errors.New("book halted or missing order")
 			}
 			o := *c.Order
@@ -321,6 +364,17 @@ func replay(s CappedState) (*bookReplay, error) {
 				return nil, errors.New("invalid book order")
 			}
 			r.orders[o.ID] = &openOrder{order: o, filled: new(big.Rat), fee: new(big.Rat)}
+			if c.Kind == "portfolio_reserve" {
+				if e := checkSizedOrder(r, o); e != nil {
+					return nil, e
+				}
+				if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
+					return nil, e
+				}
+				if e := checkPortfolioRisk(r, o, c.Marks); e != nil {
+					return nil, e
+				}
+			}
 			if e := checkReservations(r, c.Marks, c.At); e != nil {
 				return nil, e
 			}
@@ -373,6 +427,7 @@ func replay(s CappedState) (*bookReplay, error) {
 			o.released = true
 		case "halt":
 			r.halted = true
+			r.risk.Halted = true
 		default:
 			return nil, errors.New("unknown capped book event")
 		}
@@ -442,6 +497,8 @@ func SnapshotCapped(s CappedState, prices map[string]string, at time.Time) (Capp
 		return CappedSnapshot{}, e
 	}
 	out := CappedSnapshot{Cash: r.funds.Cash().FloatString(9), SettledCash: r.funds.Settled().FloatString(9), Equity: r.funds.Status(ps).Equity.FloatString(9), Positions: map[string]string{}, Pending: []BookOrder{}, Deposits: r.deposits, Halted: r.halted}
+	out.Risk, out.Distribution = r.risk, r.distribution
+	out.Halted = out.Halted || r.risk.Halted
 	for a, q := range r.positions {
 		out.Positions[a] = q.FloatString(9)
 	}

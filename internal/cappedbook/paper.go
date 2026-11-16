@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
+	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
+	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
 )
 
 // Broker is deliberately paper-only, bound to an expected account. Order is a
@@ -93,6 +96,22 @@ func (c Client) Fund(ctx context.Context, at time.Time) (account.CappedState, er
 // reserve are checked against the book and all outstanding reservations. An
 // ambiguous broker outcome retains the reservation and original client ID.
 func (c Client) Submit(ctx context.Context, o account.BookOrder, marks map[string]string) (alpaca.PaperOrder, error) {
+	if o.AllocationID == "" || o.SleeveID == "" {
+		return alpaca.PaperOrder{}, errors.New("distributor_order_required")
+	}
+	if _, err := c.Fund(ctx, o.At); err != nil {
+		return alpaca.PaperOrder{}, err
+	}
+	// Persist loss-triggered brakes even when the following order is refused.
+	if _, err := c.append(ctx, account.BookCommand{ID: "observe-" + o.ID, Kind: "risk_observe", At: o.At, Marks: marks}); err != nil {
+		return alpaca.PaperOrder{}, err
+	}
+	return c.submit(ctx, o, marks, "portfolio_reserve")
+}
+
+// submit is shared with the low-level ledger contract tests. The only exported
+// submission entry always requires a retained distributor order and risk check.
+func (c Client) submit(ctx context.Context, o account.BookOrder, marks map[string]string, kind string) (alpaca.PaperOrder, error) {
 	order := alpaca.StockOrder{ClientOrderID: o.ID, Symbol: o.Symbol, Qty: o.Quantity, Side: o.Side, Type: "limit", TimeInForce: "day", LimitPrice: o.Limit}
 	if err := order.Validate(); err != nil {
 		return alpaca.PaperOrder{}, err
@@ -100,8 +119,25 @@ func (c Client) Submit(ctx context.Context, o account.BookOrder, marks map[strin
 	if _, err := c.Fund(ctx, o.At); err != nil {
 		return alpaca.PaperOrder{}, err
 	}
-	if _, err := c.append(ctx, account.BookCommand{ID: "reserve-" + o.ID, Kind: "reserve", At: o.At, Order: &o, Marks: marks}); err != nil {
+	if _, err := c.append(ctx, account.BookCommand{ID: "reserve-" + o.ID, Kind: kind, At: o.At, Order: &o, Marks: marks}); err != nil {
 		return alpaca.PaperOrder{}, fmt.Errorf("capped book refusal: %w", err)
+	}
+	if kind == "portfolio_reserve" {
+		s, err := c.load(ctx)
+		if err != nil {
+			return alpaca.PaperOrder{}, err
+		}
+		if err = account.CheckPortfolioSubmission(s, o, marks); err != nil {
+			// A fill can land after reservation but before POST. Persist the fresh
+			// loss observation even when that final check refuses the submission.
+			at := o.At
+			if len(s.Events) > 0 && s.Events[len(s.Events)-1].At.After(at) {
+				at = s.Events[len(s.Events)-1].At
+			}
+			h := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", o.ID, s.Version)))
+			_, observeErr := c.append(ctx, account.BookCommand{ID: "observe-refusal-" + hex.EncodeToString(h[:16]), Kind: "risk_observe", At: at, Marks: marks})
+			return alpaca.PaperOrder{}, errors.Join(err, observeErr)
+		}
 	}
 	response, err := c.Broker.Submit(ctx, order)
 	if err != nil {
@@ -117,6 +153,75 @@ func (c Client) Submit(ctx context.Context, o account.BookOrder, marks map[strin
 	}
 	_, err = c.append(ctx, account.BookCommand{ID: "bind-" + o.ID, Kind: "bind", At: o.At, OrderID: o.ID, VenueOrderID: response.ID})
 	return response, err
+}
+
+// Rebalance retains sizing on current local equity after applying due deposits.
+// Lifecycle admissions come from stored gates; strategies provide weights only.
+// Qualified sleeves require the later forward-qualification owner (#92).
+func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, marks map[string]string) (allocation.Distribution, error) {
+	req.Sleeves = slices.Clone(req.Sleeves)
+	book, bookErr := c.load(ctx)
+	if bookErr != nil {
+		return allocation.Distribution{}, bookErr
+	}
+	reader, ok := c.Store.(interface {
+		StrategyGate(context.Context, string) (strategygate.Record, error)
+		StrategyTrialSearchTotal(context.Context, string) (int64, error)
+	})
+	if !ok {
+		return allocation.Distribution{}, errors.New("gate_registry_required")
+	}
+	for i := range req.Sleeves {
+		s := &req.Sleeves[i]
+		if s.Stage == "qualified" {
+			return allocation.Distribution{}, errors.New("forward_qualification_required")
+		}
+		g, e := reader.StrategyGate(ctx, s.GateID)
+		if e != nil {
+			return allocation.Distribution{}, e
+		}
+		if g.Declaration.Account != string(book.Config.Type) {
+			return allocation.Distribution{}, errors.New("gate_account_differs_from_book")
+		}
+		if g.Decision == nil || g.Decision.Stage != "incubation" || g.Decision.StrategyID != s.StrategyID {
+			return allocation.Distribution{}, errors.New("incubation_gate_required")
+		}
+		n, e := reader.StrategyTrialSearchTotal(ctx, g.Declaration.Family)
+		if e != nil {
+			return allocation.Distribution{}, e
+		}
+		if n != g.Decision.SearchTotal {
+			return allocation.Distribution{}, errors.New("gate_search_history_changed")
+		}
+		s.Minimum = g.Decision.Minimum
+		s.Stage = "incubation"
+		s.ModelDriven = false
+		if g.Decision.Status == "forward_only" {
+			s.Stage = "forward_only"
+			s.ModelDriven = true
+		}
+	}
+	if _, e := c.Fund(ctx, req.At); e != nil {
+		return allocation.Distribution{}, e
+	}
+	s, e := c.append(ctx, account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: marks})
+	if e != nil {
+		return allocation.Distribution{}, e
+	}
+	snap, e := account.SnapshotCapped(s, marks, req.At)
+	if e != nil {
+		return allocation.Distribution{}, e
+	}
+	if snap.Distribution == nil {
+		return allocation.Distribution{}, errors.New("distribution_missing")
+	}
+	return *snap.Distribution, nil
+}
+
+// Control records an explicit operator action. It is separate from all strategy
+// inputs; callers must authenticate owner commands before invoking this method.
+func (c Client) Control(ctx context.Context, id string, at time.Time, control risk.Control) (account.CappedState, error) {
+	return c.append(ctx, account.BookCommand{ID: id, Kind: "risk_control", At: at, RiskControl: &control})
 }
 func matchesOrder(v alpaca.PaperOrder, o account.BookOrder) bool {
 	return v.ID != "" && v.ClientOrderID == o.ID && v.Symbol == o.Symbol && v.Side == o.Side && v.Type == "limit" && v.TimeInForce == "day" && sameDecimal(v.Qty, o.Quantity) && sameDecimal(v.LimitPrice, o.Limit)
@@ -302,6 +407,26 @@ func (c Client) Sync(ctx context.Context, at time.Time, marks map[string]string)
 			s, e = c.append(ctx, account.BookCommand{ID: "release-" + id, Kind: "release", At: at, OrderID: id, VenueOrderID: v.ID})
 			if e != nil {
 				return fail(e)
+			}
+		}
+	}
+	if len(s.Events) > 0 && !s.Events[len(s.Events)-1].At.After(at) {
+		snap, err := account.SnapshotCapped(s, marks, at)
+		if err != nil {
+			return snap, err
+		}
+		if snap.Distribution != nil {
+			raw, err := json.Marshal(struct {
+				At    time.Time
+				Marks map[string]string
+			}{at, marks})
+			if err != nil {
+				return snap, err
+			}
+			h := sha256.Sum256(raw)
+			s, err = c.append(ctx, account.BookCommand{ID: "observe-sync-" + hex.EncodeToString(h[:16]), Kind: "risk_observe", At: at, Marks: marks})
+			if err != nil {
+				return snap, err
 			}
 		}
 	}
