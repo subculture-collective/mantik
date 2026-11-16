@@ -22,6 +22,8 @@ import (
 // authority. Bars/actions keep their original knowledge and observation clocks.
 type incubationInput struct {
 	Config               *account.CappedConfig
+	Calendar             *service.IncubationCalendar `json:",omitempty"`
+	Protective           bool                        `json:",omitempty"`
 	ID                   string
 	DecidedAt, ExecuteAt time.Time
 	At                   time.Time
@@ -72,7 +74,10 @@ func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
 	if e != nil {
 		return service.IncubationRequest{}, e
 	}
-	req := service.IncubationRequest{ID: in.ID, InputSHA256: hash, DecidedAt: in.DecidedAt, ExecuteAt: in.ExecuteAt, Quotes: in.Quotes, Limits: in.Limits, Fees: in.Fees}
+	req := service.IncubationRequest{ID: in.ID, InputSHA256: hash, DecidedAt: in.DecidedAt, ExecuteAt: in.ExecuteAt, Quotes: in.Quotes, Limits: in.Limits, Fees: in.Fees, Calendar: in.Calendar, Protective: in.Protective}
+	if in.Protective {
+		return req, nil
+	}
 	for _, entry := range in.Strategies {
 		if (entry.Library == nil) == (entry.Expression == nil) {
 			return req, errors.New("choose exactly one compiled library or expression strategy")
@@ -169,7 +174,7 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 	if *action == "run" {
 		result, e := runner.Run(ctx, req)
 		if e != nil {
-			return e
+			return errors.Join(e, emit(out, result))
 		}
 		return emit(out, result)
 	}

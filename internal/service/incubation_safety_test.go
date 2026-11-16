@@ -14,6 +14,8 @@ import (
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
+	"git.subcult.tv/subculture-collective/mantik/internal/domain"
+	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
@@ -128,12 +130,12 @@ type incubationTransport func(*http.Request) (*http.Response, error)
 func (f incubationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestIncubationActualAdapterChecksClockAfterPreparation(t *testing.T) {
-	for _, name := range []string{"expires", "valid", "ambiguous"} {
+	for _, name := range []string{"expires", "valid", "ambiguous", "worker-death", "owner-pause"} {
 		t.Run(name, func(t *testing.T) {
 			r, req, s, _ := incubationFixture(t, false)
-			at := req.ExecuteAt.Add(55 * time.Second)
+			at := req.ExecuteAt.Add(53 * time.Second)
 			if name == "expires" {
-				at = req.ExecuteAt.Add(59 * time.Second)
+				at = req.ExecuteAt.Add(57 * time.Second)
 			}
 			r.now = func() time.Time { return at }
 			posts, gets := 0, 0
@@ -144,12 +146,30 @@ func TestIncubationActualAdapterChecksClockAfterPreparation(t *testing.T) {
 				raw, status := "", 200
 				if h.Method == http.MethodGet {
 					gets++
-					at = at.Add(2 * time.Second)
+					if h.URL.Path != "/v2/account/activities/FILL" {
+						at = at.Add(2 * time.Second)
+					}
 				}
 				switch h.URL.Path {
+				case "/v2/account/activities/FILL":
+					raw = `[]`
 				case "/v2/account":
 					raw = `{"id":"paper-fixture","status":"ACTIVE"}`
 				case "/v2/assets/SPY":
+					if name == "worker-death" {
+						if e := r.Store.(storage.OperationalStore).ReportWorker(context.Background(), domain.WorkerReport{WorkerHealth: domain.WorkerHealth{Capability: "protective_monitoring", WorkerID: "fixture-worker", At: req.ExecuteAt, IntervalMillis: 60000, Stopped: true}}); e != nil {
+							t.Fatal(e)
+						}
+					}
+					if name == "owner-pause" {
+						state, e := r.Store.CappedBook(context.Background(), r.BookID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						if _, e = r.Store.ApplyCappedBook(context.Background(), r.BookID, state.Version, account.BookCommand{ID: "owner-pause-at-preparation", Kind: "risk_control", At: req.ExecuteAt, RiskControl: &risk.Control{Action: "reduce_only"}}); e != nil {
+							t.Fatal(e)
+						}
+					}
 					raw = `{"symbol":"SPY","class":"us_equity","tradable":true}`
 				case "/v2/orders":
 					if h.Method != http.MethodPost {
@@ -197,8 +217,8 @@ func TestIncubationActualAdapterChecksClockAfterPreparation(t *testing.T) {
 			}
 			r.Broker = p
 			out, e := r.Run(context.Background(), req)
-			if name == "expires" {
-				if e == nil || posts != 0 || gets != 2 {
+			if name == "expires" || name == "worker-death" || name == "owner-pause" {
+				if e == nil || posts != 0 || gets != 4 {
 					t.Fatal("preparation expiry missed", e, posts, gets)
 				}
 				state, readErr := r.Store.CappedBook(context.Background(), r.BookID)
@@ -223,7 +243,7 @@ func TestIncubationActualAdapterChecksClockAfterPreparation(t *testing.T) {
 				t.Fatal("expired retry failed", e, s.calls)
 			}
 			wantPosts := 1
-			if name == "expires" {
+			if name == "expires" || name == "worker-death" || name == "owner-pause" {
 				wantPosts = 0
 			}
 			if posts != wantPosts {

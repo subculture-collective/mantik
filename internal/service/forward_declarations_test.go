@@ -42,6 +42,7 @@ func forwardRunnerFixture(t *testing.T) (IncubationRunner, IncubationRequest, *i
 }
 
 func nextForwardCycle(req IncubationRequest, id string, at time.Time) IncubationRequest {
+	req.Calendar = incubationTestCalendar(at)
 	req.ID = id
 	req.InputSHA256 = incubationDigest(id)
 	req.DecidedAt = at
@@ -71,6 +72,7 @@ func TestForwardRunnerMultiweekHoldAndOutcomeTail(t *testing.T) {
 	s.decide = func(strategy.View) (strategy.Decision, error) { return strategy.Decision{KeepPositions: true}, nil }
 	week := nextForwardCycle(req, "week-one", req.DecidedAt.Add(7*24*time.Hour))
 	r.now = func() time.Time { return week.ExecuteAt }
+	healthyIncubationWorkers(t, r, week.ExecuteAt)
 	out, e = r.Run(ctx, week)
 	if e != nil || s.calls != 2 {
 		t.Fatal(out, e, s.calls)
@@ -172,6 +174,7 @@ func TestForwardRoutes(t *testing.T) {
 func TestForwardEntryExpiresAtActualSubmissionClock(t *testing.T) {
 	r, req, s, b, record := forwardRunnerFixture(t)
 	req = nextForwardCycle(req, "last-window-entry", record.Declaration.WindowEnd.Add(-10*time.Second))
+	healthyIncubationWorkers(t, r, req.ExecuteAt)
 	calls := 0
 	r.now = func() time.Time {
 		calls++

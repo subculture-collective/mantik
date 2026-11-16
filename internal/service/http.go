@@ -44,6 +44,7 @@ func handlerWithAcquisitions(store storage.Store, token string, clock Clock, pol
 		}{Configured: policy != nil, Policy: policy})
 	})
 	libraryRoutes(mux)
+	incubationHealthRoutes(mux, store, clock)
 	paperAccountRoutes(mux, store, clock)
 	allocationPolicyRoutes(mux, store, clock)
 	paperStrategyRoutes(mux, store, clock)

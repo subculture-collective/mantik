@@ -41,6 +41,8 @@ A run input has these fields (Go JSON field names are accepted):
 | `ExecuteAt` | Later execution clock. A new submission must still be within 60 seconds of this clock and of the execution quote. |
 | `Strategies` | Complete active roster. Each entry binds `SleeveID`, `GateID`, positive daily-volatility `Risk`, `Assets`, and exactly one `Library` configuration or `Expression` definition. |
 | `Bars`, `Actions`, `Universe` within each strategy | Retained source material with original knowledge clocks. Bars bind the executable symbol as both `AssetID` and `Symbol`; a stable-ID-to-symbol resolver is not included here. Supply a reviewed universe when the recipe declares it. Option-chain strategies need a chain-capable application source and are outside this stock CLI adapter. |
+| `Calendar` | Retained exchange-calendar coverage: `From`, `Through`, `SourceSHA256`, `ObservedAt`, `Sessions` with `Date`, `OpenAt`, `CloseAt`. Coverage must include every required warmup session through the current New York date. Observation must precede the decision and be at most 24 hours old. Keep original response bytes in private custody. |
+| `Protective` | Optional `true` requests a flat target for every retained sleeve owner. It cannot add risk or change ownership, skips recipe compilation and strategy data/builds, and uses retained costs and state. Fresh executable quotes and limits remain required. |
 | `Quotes` | Map from executable symbol to `account.IncubationQuote`: `Symbol`, decimal `Bid`, `Ask`, `BidQuantity`, `AskQuantity`, original `SourceSHA256`, `EvidenceClass`, `OccurredAt`, `ReceivedAt`. Sizes are shares, not unverified provider-native units. |
 | `Limits`, `Fees` | Explicit symbol-to-decimal day-limit prices and conservative total venue-fee bounds. These are reviewed execution inputs, never strategy or model output. |
 
@@ -89,9 +91,64 @@ the market clock must be strictly later than the decision, and receipt must be
 between market time and execution time. Current observations cannot be reused as
 historical knowledge.
 
-The real paper adapter repeats the execution-clock and quote-age checks after
-its account/asset reads and durable intent retention, immediately before the
-order POST. A quote that expires during this preparation cannot be submitted.
+### Health admission per cycle
+
+New risk requires all four service checks to be known and healthy:
+
+- Daily data: every declared asset must have the latest eligible exchange
+  session and the complete declared warmup. Eligibility follows retained session
+  closes plus the daily collector's SIP embargo. A Friday close can remain
+  current through a weekend or holiday; daily bars do not use the quote's
+  60-second age limit. Original publication, observation and availability clocks
+  must be ordered and known before the decision. Every trading asset also needs
+  a current execution quote, even when it did not become a target.
+- Owned-ledger reconciliation: the runner performs the existing GET-only fill
+  and order reconciliation before building decisions. Its in-memory proof lasts
+  at most 60 seconds and is not restored from an old plan. Other economic
+  receipts or another allocation invalidate that proof at submission.
+- Worker liveness: the existing `protective_monitoring` and `action_delivery`
+  workers must have successful, current service reports. Missing, failed,
+  stopped, future or expired reports are unavailable. Each worker's existing
+  heartbeat deadline applies; a previous report is not proof of indefinite
+  process liveness. These are the shared safety workers, not the manual option
+  order route. There is no health override in cycle or model input.
+- Risk brake: the service replays the owned book and observes its marked equity
+  and configured deposits. A missing risk observation is unavailable until the
+  runner initializes it through the existing journal command. Owner controls,
+  loss brakes and hard caps apply independently. Health recovery never clears
+  pause, reduce-only, strategy breaker, kill or hard halt state.
+
+The paper adapter must implement `SubmitChecked`. The service repeats admission,
+owner controls, exact distributor-order checks, forward clocks and quote age
+**after** account/asset reads and durable intent retention, immediately before
+POST. Slow preparation cannot extend a health, quote or holding-window clock.
+Reservations and ambiguous orders are recovered by GET only, without renewed
+entry permission. A blocked entry does not prevent later protective reductions
+in the same distribution. A missing strategy build holds existing exposure;
+explicit `Protective: true` can flatten retained sleeves without compiling or
+calling a strategy. `HoldExposure` and forward-window expiry retain their
+separate meaning.
+
+Results include `Admission`, with separate `entry`, `reduce`, `exit`, `reconcile`
+and `settle` classes, exact check codes, observation clocks and evidence refs.
+The initial cycle report is retained in `Plan.Health` beside its input hash,
+quotes, decisions and costs. It is evidence, never a permission token. The CLI
+also emits the result when a run fails, then returns the error.
+
+`GET /v1/incubation/{id}/readiness` uses the normal bearer-token authentication.
+It reports current admission per work class and exposes the last retained cycle
+report separately as `retained_cycle_evidence`. A read-only GET or a service
+restart cannot renew cycle data or reconciliation: without a current cycle those
+checks say unavailable and entry is blocked. Safety-work readiness means health
+permits that class; its own quote, ledger and reduce-only checks still apply.
+It does not claim an exit, reconciliation or settlement actually completed.
+
+`sync` remains independent of strategy compilation, market-bar availability,
+liveness admission and model availability. Owned fills and unsettled sale credits
+can still reconcile and settle while entry admission is blocked. Its existing
+fresh quote/mark contract remains in force. Health snapshots do not change
+lifecycle policy, promotion, daily reviews, family search accounting or capital
+ownership. No SQL migration or option-paper implementation is required.
 
 ## Fill comparison and returns
 

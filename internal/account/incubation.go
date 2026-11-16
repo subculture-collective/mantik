@@ -9,6 +9,7 @@ import (
 
 	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
 	"git.subcult.tv/subculture-collective/mantik/internal/executioncost"
+	"git.subcult.tv/subculture-collective/mantik/internal/workhealth"
 )
 
 // IncubationQuote is a retained USD execution observation. SourceSHA256 binds
@@ -28,6 +29,8 @@ type IncubationDecision struct {
 // IncubationPlan is recorded before sizing or submitting. Quotes model immediate
 // execution at Rebalance.At, independently of the venue's later fill clock.
 type IncubationPlan struct {
+	// Health is retained observation evidence, never renewed submission authority.
+	Health *workhealth.Report `json:",omitempty"`
 	// ForwardDeclarations binds optional prospective evidence clocks by sleeve.
 	ForwardDeclarations map[string]string `json:",omitempty"`
 	Costs               map[string]executioncost.Model

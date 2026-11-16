@@ -62,7 +62,10 @@ quotes and zero fees or slippage.
   strategies on retained prospective quotes and reports the worse venue/model
   fill result, with no qualification credit. It preserves explicit flat exits
   for retained owners with stale research and rechecks quote expiry immediately
-  before the paper adapter's order POST.
+  before the paper adapter's order POST. Cycle health blocks new risk on stale
+  daily data or unknown reconciliation, worker liveness or risk evidence, while
+  protective flattening, fill reconciliation and settlement remain independent.
+  Authenticated per-book readiness reports admission for each work class.
 - **Kalshi data**: [public collection](docs/reference/kalshi-data.md) retains
   weather-market rules and order-book observations for point-in-time reads.
   [Weather probabilities](docs/reference/kalshi-weather.md) retain pre-close
