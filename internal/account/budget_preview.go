@@ -108,7 +108,10 @@ func PreviewPortfolioBudgets(s CappedState, req allocation.RebalanceRequest, pri
 		exposure[key].Add(exposure[key], value)
 	}
 	for _, p := range snap.Positions {
-		q, _ := bookRat(p.Quantity)
+		q, quantityErr := allocationAmount(p.Quantity)
+		if quantityErr != nil {
+			return nil, errors.New("invalid position quantity")
+		}
 		price, e := bookRat(prices[p.Symbol])
 		if e != nil || price.Sign() <= 0 {
 			return nil, errors.New("position mark unavailable")
