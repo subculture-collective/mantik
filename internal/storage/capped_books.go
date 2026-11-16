@@ -119,24 +119,9 @@ func (m *Memory) applyCappedBook(ctx context.Context, id string, version int64, 
 			return account.CappedState{}, e
 		}
 	}
-	if next.Version != s.Version {
-		record, err := newCappedHistory(s, next, c)
-		if err != nil {
-			return account.CappedState{}, err
-		}
-		if m.cappedHistory == nil {
-			m.cappedHistory = map[string]map[string]CappedHistoryRecord{}
-		}
-		if m.cappedHistory[id] == nil {
-			m.cappedHistory[id] = map[string]CappedHistoryRecord{}
-		}
-		m.cappedHistory[id][c.ID] = record
-		if m.cappedHistoryOrder == nil {
-			m.cappedHistoryOrder = map[string][]string{}
-		}
-		m.cappedHistoryOrder[id] = append(m.cappedHistoryOrder[id], c.ID)
+	if e := m.retainCappedLocked(s, next, c); e != nil {
+		return account.CappedState{}, e
 	}
-	m.cappedBooks[id] = next
 	return copyCapped(next)
 }
 
@@ -277,22 +262,7 @@ func (p *Postgres) applyCappedBook(ctx context.Context, id string, version int64
 		if e = checkPortfolioAdmissionsTx(ctx, tx, s, command, p.qualificationEvaluator); e != nil {
 			return account.CappedState{}, e
 		}
-		record, err := newCappedHistory(s, next, command)
-		if err != nil {
-			return account.CappedState{}, err
-		}
-		raw, err := json.Marshal(command)
-		if err != nil {
-			return account.CappedState{}, err
-		}
-		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_history(book_id,sequence,event_id,payload,previous_sha256,state_sha256) VALUES($1,$2,$3,$4,$5,$6)`, id, next.Version, command.ID, string(raw), record.PreviousSHA256, record.StateSHA256); e != nil {
-			return account.CappedState{}, e
-		}
-		head, err := json.Marshal(next)
-		if err != nil {
-			return account.CappedState{}, err
-		}
-		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_heads(book_id,version,state,state_sha256) VALUES($1,$2,$3,$4) ON CONFLICT(book_id) DO UPDATE SET version=EXCLUDED.version,state=EXCLUDED.state,state_sha256=EXCLUDED.state_sha256`, id, next.Version, string(head), record.StateSHA256); e != nil {
+		if e = retainCappedTx(ctx, tx, s, next, command); e != nil {
 			return account.CappedState{}, e
 		}
 	}

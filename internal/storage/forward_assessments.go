@@ -146,11 +146,14 @@ func (m *Memory) AssessForward(ctx context.Context, id string, now func() time.T
 	if a.Status == "unavailable" {
 		return a, nil
 	}
-	next, e := account.ApplyCappedCommand(b, account.BookCommand{ID: "qualification-" + id, Kind: "qualification", At: a.At, Qualification: &a})
+	c := account.BookCommand{ID: "qualification-" + id, Kind: "qualification", At: a.At, Qualification: &a}
+	next, e := account.ApplyCappedCommand(b, c)
 	if e != nil {
 		return a, e
 	}
-	m.cappedBooks[b.Config.ID] = next
+	if e = m.retainCappedLocked(b, next, c); e != nil {
+		return a, e
+	}
 	return clone(a), nil
 }
 func loadAssessmentPlan(ctx context.Context, q cappedQuery, id string) (forward.AssessmentPlanRecord, error) {
@@ -302,11 +305,7 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 	if e != nil {
 		return a, e
 	}
-	raw, e := json.Marshal(c)
-	if e != nil {
-		return a, e
-	}
-	if _, e = tx.Exec(ctx, "INSERT INTO mantik_capped_book_events(book_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)", locked, next.Version, c.ID, string(raw)); e != nil {
+	if e = retainCappedTx(ctx, tx, b, next, c); e != nil {
 		return a, e
 	}
 	return a, tx.Commit(ctx)
@@ -320,9 +319,7 @@ func validateAssessmentCollections(ctx context.Context, b account.CappedState, i
 		if c.Kind != "qualification_plan" || eval == nil || c.Incubation.Qualification.SearchTotal == nil || *c.Incubation.Qualification.SearchTotal < w.SearchTotal || *c.Incubation.Qualification.SearchTotal > n {
 			return forward.ErrInvalid
 		}
-		prefix := b
-		prefix.Events = b.Events[:i]
-		prefix.Version = int64(i)
+		prefix := account.CappedPrefix(b, i)
 		if e := eval(ctx, clone(prefix), clone(c), clone(w), clone(g), *c.Incubation.Qualification.SearchTotal); e != nil {
 			return e
 		}

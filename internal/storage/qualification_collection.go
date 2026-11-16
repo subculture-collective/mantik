@@ -122,8 +122,7 @@ func (p *Postgres) validateCollectionTx(ctx context.Context, tx pgx.Tx, s accoun
 func collectionPrefix(s account.CappedState, id string) account.CappedState {
 	for i, e := range s.Events {
 		if e.ID == id {
-			s.Events = s.Events[:i]
-			s.Version = int64(i)
+			s = account.CappedPrefix(s, i)
 			break
 		}
 	}
@@ -174,9 +173,10 @@ func validateQualifiedAdmissions(ctx context.Context, s account.CappedState, c a
 		if validateAssessmentPlan(p, w) != nil || int64(len(starts)) != q.SearchTotal || !sameGate(starts, q.SearchStarts) || q.JournalVersion < 0 || q.JournalVersion > s.Version {
 			return forward.ErrInvalid
 		}
-		prefix := s
-		prefix.Events = s.Events[:q.JournalVersion]
-		prefix.Version = q.JournalVersion
+		prefix, e := account.CappedVersionPrefix(s, q.JournalVersion)
+		if e != nil {
+			return forward.ErrInvalid
+		}
 		if e = validateAssessmentCollections(ctx, prefix, q.PlanID, eval, w, g, q.SearchTotal); e != nil {
 			return e
 		}

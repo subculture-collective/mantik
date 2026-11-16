@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
+	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 )
 
 func TestPreviewPortfolioBudgetsValuesMarginShort(t *testing.T) {
@@ -33,6 +34,21 @@ func TestPreviewPortfolioBudgetsValuesMarginShort(t *testing.T) {
 	snap, err := SnapshotCapped(s, prices, at)
 	if err != nil || snap.Positions["QQQ"] != "-0.100000000" || snap.Equity != "2000.000000000" {
 		t.Fatal("valid margin short required", snap, err)
+	}
+	for i := range 3 {
+		s, err = ApplyCappedCommand(s, BookCommand{ID: "mark-" + strings.Repeat("x", i+1), Kind: "risk_observe", At: at.Add(time.Duration(i+1) * 10 * time.Second), Marks: prices})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err = ApplyCappedCommand(s, BookCommand{ID: "resume", Kind: "risk_control", At: at.Add(40 * time.Second), RiskControl: &risk.Control{Action: "resume"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = at.Add(70 * time.Second)
+	retained, err := CurrentPortfolioMarks(s, at)
+	if err != nil || retained["QQQ"] != "100" {
+		t.Fatal("fresh checkpoint mark was lost behind a control", retained, err)
 	}
 	model := allocation.Sleeve{ID: "model", StrategyID: "strategy-" + strings.Repeat("c", 64), Stage: "forward_only", ModelDriven: true, Risk: "1", Minimum: "1"}
 	preview := allocation.RebalanceRequest{ID: "preview", At: at, Sleeves: []allocation.Sleeve{incumbent, model}}

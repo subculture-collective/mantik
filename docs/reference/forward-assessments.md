@@ -25,7 +25,7 @@ The store records the original declaration clock and full forward-record hash.
 Exact retries preserve bytes and clock; changed retries conflict, including after
 expiry. A short window with long holding limits may have no feasible holdout.
 Declare a sufficiently long window in advance; do not shorten the purge later.
-Migration 126 adds only the append-only assessment-plan table. It neither edits
+Migration 127 adds only the append-only assessment-plan table. It neither edits
 v1 records nor converts old evidence.
 
 ## Collect through compiled service code
@@ -186,7 +186,7 @@ prefix before it can publish or return a retained qualification. Old null source
 or missing compiled manifests fail closed; this change does not rewrite historical
 rows or grant them new credit. Qualified allocation and final submission also
 recompute the retained grant and its collection evidence, rejecting a promotion
-issued from invalid old evidence. No additional migration beyond 126 is required.
+issued from invalid old evidence. No additional migration beyond 127 is required.
 The callback performs no storage/provider reads under the fence. PostgreSQL takes
 the book row before the family lock, including for flat collection decisions.
 
@@ -201,3 +201,8 @@ These are synthetic contract tests. A natural observation window, including #108
 has not been performed. Collection still does not prove profitability or broader
 release qualification. Option/model-dependent collection and recipe work remain
 separate from this stock compiled path.
+
+The normal disposable integration run includes the compiled service PostgreSQL
+contracts alongside CLI and research contracts. They exercise collection,
+promotion, post-window submission and owner/family fences against durable
+checkpoint history. Original journal versions count commands, not hot slots.

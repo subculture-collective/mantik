@@ -166,6 +166,19 @@ func TestQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
 	if e != nil || result.Status != "passed" || result.Sessions != 6 {
 		t.Fatal(result.Status, result.Reason, e)
 	}
+	retained, e := r.Store.CappedBook(ctx, r.BookID)
+	if e != nil || retained.Version <= int64(len(retained.Events)) {
+		t.Fatal("qualification did not exercise compacted journal history", e)
+	}
+	history := r.Store.(storage.CappedHistoryStore)
+	page, e := history.CappedBookHistory(ctx, r.BookID, retained.Version-1, 1)
+	if e != nil || len(page) != 1 || page[0].Command.Kind != "qualification" {
+		t.Fatal("promotion missing from immutable custody", page, e)
+	}
+	rebuilt, e := storage.ReplayCappedBookHistory(ctx, history, retained.Config, retained.Version)
+	if e != nil || !reflect.DeepEqual(retained, rebuilt) {
+		t.Fatal("promotion checkpoint history did not reconstruct exactly", e)
+	}
 
 	next := nextForwardCycle(req, "promoted-real-cycle", d.OutcomeDeadline.Add(time.Second))
 	next.Qualification = nil
@@ -384,7 +397,7 @@ func compiledQualificationRequest(t *testing.T, req IncubationRequest, member bo
 	return out
 }
 
-func TestPostgresQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
+func TestPostgresContractsQualificationRunnerCollectsDistinctEvidence(t *testing.T) {
 	TestQualificationRunnerCollectsDistinctEvidence(t)
 }
 

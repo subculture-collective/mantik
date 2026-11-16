@@ -547,7 +547,11 @@ func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
 	if e = json.Unmarshal(raw, &copied); e != nil {
 		return s, e
 	}
-	if c.Kind == "risk_observe" {
+	// Reconciliation discovers fills before it appends its next observation.
+	// Free an exhausted legacy observation tail for financial/protective writes,
+	// but never rewrite the prefix hash supplied by a review or qualification.
+	protectiveWrite := slices.Contains([]string{"fill", "bind", "reject", "release", "halt", "risk_control", "deposit"}, c.Kind)
+	if c.Kind == "risk_observe" || len(out.Events) == 4096 && protectiveWrite {
 		out, e = compactTrailingRisk(out)
 		if e != nil {
 			return s, e

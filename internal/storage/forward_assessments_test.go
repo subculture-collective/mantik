@@ -341,9 +341,6 @@ func TestPostgresContractsQualificationDemotion(t *testing.T) {
 func TestPostgresContractsForwardAssessmentUpgradeFrom125(t *testing.T) {
 	p := timerPostgres(t, "assessment_upgrade125")
 	ctx := context.Background()
-	if _, e := p.pool.Exec(ctx, "DROP TABLE mantik_forward_assessment_plans; DELETE FROM mantik_schema WHERE version=126"); e != nil {
-		t.Fatal(e)
-	}
 	d, at := forwardFixture(t, p)
 	original, e := p.DeclareForward(ctx, d, func() time.Time { return at })
 	if e != nil {
@@ -354,16 +351,26 @@ func TestPostgresContractsForwardAssessmentUpgradeFrom125(t *testing.T) {
 	if e = p.pool.QueryRow(ctx, "SELECT coalesce(json_agg(t)::text,'[]') FROM (SELECT * FROM mantik_paper_evaluation_assessments ORDER BY id) t").Scan(&before); e != nil {
 		t.Fatal(e)
 	}
+	if _, e = p.pool.Exec(ctx, "DROP TABLE mantik_forward_assessment_plans, mantik_capped_book_heads, mantik_capped_book_history; DELETE FROM mantik_schema WHERE version>=126"); e != nil {
+		t.Fatal(e)
+	}
+	var version int
+	if e = p.pool.QueryRow(ctx, "SELECT max(version) FROM mantik_schema").Scan(&version); e != nil || version != 125 {
+		t.Fatal("upgrade did not start at schema125", version, e)
+	}
 	if e = p.migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
+	if e = p.pool.QueryRow(ctx, "SELECT max(version) FROM mantik_schema").Scan(&version); e != nil || version != 127 {
+		t.Fatal("combined journal/assessment upgrade incomplete", version, e)
+	}
 	current, e := p.ForwardDeclaration(ctx, d.ID)
 	if e != nil || !reflect.DeepEqual(original, current) {
-		t.Fatal("126 changed forward v1 bytes", e)
+		t.Fatal("127 changed forward v1 bytes", e)
 	}
 	var after []byte
 	if e = p.pool.QueryRow(ctx, "SELECT coalesce(json_agg(t)::text,'[]') FROM (SELECT * FROM mantik_paper_evaluation_assessments ORDER BY id) t").Scan(&after); e != nil || string(before) != string(after) {
-		t.Fatal("126 changed legacy assessments", e)
+		t.Fatal("127 changed legacy assessments", e)
 	}
 	if _, e = p.pool.Exec(ctx, migrations.ForwardAssessmentPlans); e != nil {
 		t.Fatal(e)

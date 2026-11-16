@@ -96,3 +96,22 @@ func ValidateCappedState(s CappedState) error {
 	_, err := replay(s)
 	return err
 }
+
+// CappedVersionPrefix selects a retained hot boundary by its original-command
+// version. A cut inside a folded observation run needs immutable history replay.
+func CappedVersionPrefix(s CappedState, version int64) (CappedState, error) {
+	if version < 0 || version > s.Version {
+		return CappedState{}, ErrBookConflict
+	}
+	var count int64
+	for i, c := range s.Events {
+		if count == version {
+			return CappedPrefix(s, i), nil
+		}
+		count += CappedCommandCount(c)
+	}
+	if count == version {
+		return CappedPrefix(s, len(s.Events)), nil
+	}
+	return CappedState{}, ErrBookConflict
+}

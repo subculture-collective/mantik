@@ -238,3 +238,51 @@ func ReplayCappedBookHistory(ctx context.Context, source CappedHistoryStore, cfg
 	}
 	return state, nil
 }
+
+// retainCappedLocked publishes a validated transition under the caller's book lock.
+// Privileged qualification and ordinary commands share the same immutable custody.
+func (m *Memory) retainCappedLocked(before, after account.CappedState, c account.BookCommand) error {
+	if after.Version != before.Version {
+		record, err := newCappedHistory(before, after, c)
+		if err != nil {
+			return err
+		}
+		id := before.Config.ID
+		if m.cappedHistory == nil {
+			m.cappedHistory = map[string]map[string]CappedHistoryRecord{}
+		}
+		if m.cappedHistory[id] == nil {
+			m.cappedHistory[id] = map[string]CappedHistoryRecord{}
+		}
+		if m.cappedHistoryOrder == nil {
+			m.cappedHistoryOrder = map[string][]string{}
+		}
+		m.cappedHistory[id][c.ID] = record
+		m.cappedHistoryOrder[id] = append(m.cappedHistoryOrder[id], c.ID)
+	}
+	m.cappedBooks[before.Config.ID] = after
+	return nil
+}
+
+// retainCappedTx keeps the replay head and its original command in one transaction.
+// The caller holds the book row and any required family locks.
+func retainCappedTx(ctx context.Context, tx pgx.Tx, before, after account.CappedState, c account.BookCommand) error {
+	record, err := newCappedHistory(before, after, c)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	id := before.Config.ID
+	if _, err = tx.Exec(ctx, `INSERT INTO mantik_capped_book_history(book_id,sequence,event_id,payload,previous_sha256,state_sha256) VALUES($1,$2,$3,$4,$5,$6)`, id, after.Version, c.ID, string(raw), record.PreviousSHA256, record.StateSHA256); err != nil {
+		return err
+	}
+	head, err := json.Marshal(after)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO mantik_capped_book_heads(book_id,version,state,state_sha256) VALUES($1,$2,$3,$4) ON CONFLICT(book_id) DO UPDATE SET version=EXCLUDED.version,state=EXCLUDED.state,state_sha256=EXCLUDED.state_sha256`, id, after.Version, string(head), record.StateSHA256)
+	return err
+}

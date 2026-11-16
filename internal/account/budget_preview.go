@@ -20,6 +20,9 @@ func CurrentPortfolioMarks(s CappedState, at time.Time) (map[string]string, erro
 	}
 	prices, clocks := map[string]string{}, map[string]time.Time{}
 	for _, event := range s.Events {
+		if event.Kind == "risk_checkpoint" && event.RiskCheckpoint != nil {
+			event = event.RiskCheckpoint.Last
+		}
 		if event.At.After(at) {
 			return nil, errors.New("valuation precedes retained book")
 		}

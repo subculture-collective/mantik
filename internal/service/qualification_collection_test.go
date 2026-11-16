@@ -144,7 +144,7 @@ func TestQualificationCollectionRecomputesAtBoundary(t *testing.T) {
 		t.Fatal("unconfigured store admitted collection")
 	}
 }
-func TestPostgresQualificationCollectionRecomputesAtBoundary(t *testing.T) {
+func TestPostgresContractsQualificationCollectionRecomputesAtBoundary(t *testing.T) {
 	TestQualificationCollectionRecomputesAtBoundary(t)
 }
 func qualificationBenchmark(t *testing.T, d forward.Declaration, at time.Time) forward.BenchmarkObservation {
@@ -203,10 +203,10 @@ func TestQualificationFencedFamily(t *testing.T) { TestQualificationRunnerCollec
 func TestQualificationFencedOwnerPause(t *testing.T) {
 	TestQualificationRunnerCollectsDistinctEvidence(t)
 }
-func TestPostgresQualificationFencedFamily(t *testing.T) {
+func TestPostgresContractsQualificationFencedFamily(t *testing.T) {
 	TestQualificationRunnerCollectsDistinctEvidence(t)
 }
-func TestPostgresQualificationFencedOwnerPause(t *testing.T) {
+func TestPostgresContractsQualificationFencedOwnerPause(t *testing.T) {
 	TestQualificationRunnerCollectsDistinctEvidence(t)
 }
 
@@ -265,6 +265,6 @@ func TestQualificationPendingFamilyStillExits(t *testing.T) {
 		t.Fatal("pending-family control earned credit")
 	}
 }
-func TestPostgresQualificationPendingFamilyStillExits(t *testing.T) {
+func TestPostgresContractsQualificationPendingFamilyStillExits(t *testing.T) {
 	TestQualificationPendingFamilyStillExits(t)
 }
