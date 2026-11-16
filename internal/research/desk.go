@@ -73,6 +73,11 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 	}
 	appendWithContext := func(ctx context.Context, kind string, body any) error {
 		ev := Event{Kind: kind, At: time.Now().UTC().Truncate(time.Microsecond), Body: canonical(marshal(body))}
+		if kind == "reply" {
+			if e := reserveReply(ctx, trials, d, ev.Body, ev.At, Inspect(d.ID, events).Calls); e != nil {
+				return e
+			}
+		}
 		if e := j.Append(ctx, d.ID, len(events), ev); e != nil {
 			return e
 		}
@@ -94,10 +99,35 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 		state := Inspect(d.ID, events)
 		last := events[len(events)-1]
 		if last.Kind == "done" {
+			// A failure without captured stdout can finish before its zero-attempt
+			// receipt is acknowledged. Recover that receipt from the durable done event.
+			if state.Status == "model_unavailable" {
+				if _, e := trials.StrategyTrialBatch(ctx, attemptID(d.ID, state.Calls, 0)); errors.Is(e, strategytrial.ErrNotFound) {
+					b := strategytrial.Batch{ID: attemptID(d.ID, state.Calls, 0), Family: d.Family, Reply: last.Body, At: last.At, TrialIDs: []string{}}
+					if e = trials.ReserveStrategyTrialBatch(ctx, b); e != nil {
+						return state, e
+					}
+				} else if e != nil {
+					return state, e
+				}
+				if e := trials.ResolveStrategyTrialBatch(ctx, attemptID(d.ID, state.Calls, 0)); e != nil {
+					return state, e
+				}
+			}
 			return state, nil
 		}
 		if last.Kind == "call" {
-			return state, ErrInterrupted
+			// Reservation may have committed even when reply append/ack failed. Restore
+			// its original timestamp and bytes; never ask the model for a replacement.
+			ev, e := recoverReply(ctx, trials, d, state.Calls)
+			if e != nil {
+				return state, e
+			}
+			if e = j.Append(ctx, d.ID, len(events), ev); e != nil {
+				return state, e
+			}
+			events = append(events, ev)
+			continue
 		}
 		if last.Kind == "result" {
 			var result toolResult
@@ -114,6 +144,9 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 			}
 		}
 		if last.Kind == "reply" {
+			if e := reserveReply(ctx, trials, d, last.Body, last.At, state.Calls); e != nil {
+				return state, e
+			}
 			var raw string
 			if json.Unmarshal(last.Body, &raw) != nil {
 				var rejected rejectedReply
@@ -132,6 +165,9 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 			}
 			result, done, e := dispatch(ctx, trials, gates, d, events, raw, last.At, state.Calls)
 			if e != nil {
+				return Inspect(d.ID, events), e
+			}
+			if e = trials.ResolveStrategyTrialBatch(ctx, attemptID(d.ID, state.Calls, 0)); e != nil {
 				return Inspect(d.ID, events), e
 			}
 			if e = appendEvent("result", result); e != nil {
@@ -154,6 +190,9 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 			e = appendEvent("done", "context_limit")
 			return Inspect(d.ID, events), e
 		}
+		if e = trials.BeginStrategyTrialBatch(ctx, attemptID(d.ID, state.Calls+1, 0), d.Family); e != nil {
+			return state, e
+		}
 		if e = appendEvent("call", map[string]any{"prompt_sha256": digest([]byte(prompt)), "model": d.Identity.Model}); e != nil {
 			return state, e
 		}
@@ -162,6 +201,11 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 			// Diagnostics can contain credentials; retain only a stable status.
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			var saveErr error
+			if record.Response != "" && (record.Provider != d.Identity.Provider || record.Model != d.Identity.Model || len(record.Response) > 65536 || digest([]byte(record.Response)) != record.ResponseSHA256) {
+				// Captured but unauthenticated output has unknown multiplicity. Preserve
+				// the pre-call fence rather than issuing a zero-attempt failure receipt.
+				saveErr = errors.New("rejected subscription response identity or hash mismatch")
+			}
 			if record.Provider == d.Identity.Provider && record.Model == d.Identity.Model && record.Response != "" && len(record.Response) <= 65536 && digest([]byte(record.Response)) == record.ResponseSHA256 {
 				// Retain rejected stdout before the trial write, so a crash can
 				// recover it without dispatching a partial or failed response.
@@ -178,6 +222,17 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 			}
 			if saveErr == nil {
 				saveErr = appendWithContext(cleanup, "done", "model_unavailable")
+			}
+			if saveErr == nil && events[len(events)-1].Kind == "done" {
+				if _, e := trials.StrategyTrialBatch(cleanup, attemptID(d.ID, state.Calls+1, 0)); errors.Is(e, strategytrial.ErrNotFound) {
+					last := events[len(events)-1]
+					saveErr = trials.ReserveStrategyTrialBatch(cleanup, strategytrial.Batch{ID: attemptID(d.ID, state.Calls+1, 0), Family: d.Family, Reply: last.Body, At: last.At, TrialIDs: []string{}})
+				} else {
+					saveErr = e
+				}
+				if saveErr == nil {
+					saveErr = trials.ResolveStrategyTrialBatch(cleanup, attemptID(d.ID, state.Calls+1, 0))
+				}
 			}
 			cancel()
 			return Inspect(d.ID, events), errors.Join(errors.New("desk subscription call failed; inspect private hash journal"), saveErr)
@@ -231,7 +286,19 @@ type rejectedReply struct {
 // rejectedAttempt counts captured evolution proposals without dispatching any
 // rejected stdout. The transport may have discarded a suffix; only retained
 // bytes are evidence. Legacy single-command rejection keeps its exact start.
-func rejectedAttempt(ctx context.Context, s Trials, d Declaration, body []byte, at time.Time, step int) (toolResult, bool, error) {
+func rejectedAttempt(ctx context.Context, s Trials, d Declaration, body []byte, at time.Time, step int) (out toolResult, done bool, err error) {
+	if err = reserveReply(ctx, s, d, body, at, step); err != nil {
+		return out, false, err
+	}
+	defer func() {
+		if err == nil {
+			err = s.ResolveStrategyTrialBatch(ctx, attemptID(d.ID, step, 0))
+		}
+	}()
+	return dispatchRejected(ctx, s, d, body, at, step)
+}
+
+func dispatchRejected(ctx context.Context, s Trials, d Declaration, body []byte, at time.Time, step int) (toolResult, bool, error) {
 	var rejected rejectedReply
 	if strict(body, &rejected) != nil {
 		return toolResult{}, false, ErrConflict
@@ -242,7 +309,23 @@ func rejectedAttempt(ctx context.Context, s Trials, d Declaration, body []byte, 
 	return attempt(ctx, s, d, Request{}, string(body), ErrInvalid, at, step, 0)
 }
 
-func dispatch(ctx context.Context, s Trials, g Gates, d Declaration, events []Event, raw string, at time.Time, step int) (toolResult, bool, error) {
+func dispatch(ctx context.Context, s Trials, g Gates, d Declaration, events []Event, raw string, at time.Time, step int) (out toolResult, done bool, err error) {
+	body := marshal(raw)
+	if len(replyBatch(d, body, at, step).TrialIDs) == 0 {
+		return dispatchTool(ctx, s, g, d, events, raw, at, step)
+	}
+	if err = reserveReply(ctx, s, d, body, at, step); err != nil {
+		return out, false, err
+	}
+	defer func() {
+		if err == nil {
+			err = s.ResolveStrategyTrialBatch(ctx, attemptID(d.ID, step, 0))
+		}
+	}()
+	return dispatchTool(ctx, s, g, d, events, raw, at, step)
+}
+
+func dispatchTool(ctx context.Context, s Trials, g Gates, d Declaration, events []Event, raw string, at time.Time, step int) (toolResult, bool, error) {
 	var r Request
 	parseErr := strict([]byte(raw), &r)
 	specs := suppliedSpecs(raw)

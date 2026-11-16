@@ -395,3 +395,8 @@ var ResearchDeskEvents string
 //
 //go:embed 0124_forward_declarations.sql
 var ForwardDeclarations string
+
+// StrategyTrialBatches fences retained replies until all attempts are registered.
+//
+//go:embed 0125_strategy_trial_batches.sql
+var StrategyTrialBatches string

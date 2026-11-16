@@ -294,6 +294,7 @@ func evolve(ctx context.Context, s Trials, d Declaration, r Request, raw string,
 	// Freeze all starts, selection and penalties before evaluating any candidate.
 	// If interrupted during this loop, retry fills only the missing starts. Every
 	// existing unfinished start is conservative crash evidence, never rerun.
+	// The durable family fence stays pending until dispatch reconciles all starts.
 	for i := range prepared {
 		var declaration map[string]json.RawMessage
 		if e := json.Unmarshal(prepared[i].start.Spec, &declaration); e != nil {

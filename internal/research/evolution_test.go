@@ -274,11 +274,14 @@ func TestDeskEvolutionPartialBatchRecovery(t *testing.T) {
 				wrapped.failReturn = true
 			}
 			wrapped.beforeReturn = func() {
-				n, _ := s.StrategyTrialSearchTotal(ctx, d.Family)
-				if n != 5 {
-					t.Fatal("evaluated before all starts", n)
+				if wrapped.starts != 3 {
+					t.Fatal("evaluated before all starts", wrapped.starts)
+				}
+				if _, e := s.StrategyTrialSearchTotal(ctx, d.Family); !errors.Is(e, strategytrial.ErrFamilyPending) {
+					t.Fatal("batch evaluation must remain fenced", e)
 				}
 			}
+
 			if phase == "before_evaluation" {
 				// Reserve via a failed return write, leaving all starts unfinished.
 				wrapped.failReturn = true

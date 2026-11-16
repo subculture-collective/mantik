@@ -182,16 +182,34 @@ No candidate activates, allocates, writes a gate, or receives qualification
 credit. Every retained start counts toward the registry family search total,
 including rejected, duplicate, unsuccessful, crashed and unfinished trials.
 
-A reply is the durable batch intent. If the process exits halfway through
-reserving starts, the registry contains the starts written so far and the
-reply identifies every remaining ordinal. Retrying the same session fills the
-missing starts before any evaluation. Existing unfinished starts are marked
-crashed and never executed again; finished starts retain their original
-outcome and returns. The reply needs recovery before its missing starts can
-appear in the registry search total. This is conservative recovery, not an
-atomic multi-start transaction. Independent sessions retain independent IDs and
-all their starts contribute to the same family total. There is no cross-session
-result cache or search-count discount.
+Before each model call, the registry commits an append-only family intent under
+its existing family lock. Once output is captured, an immutable receipt retains
+the exact reply, its original timestamp, and every scanner-derived attempt ID
+before the desk journal appends the reply. Rejected transport output uses the
+same boundary. No caller supplies a search count.
+
+Until successful dispatch reconciles every declared start, the family count and
+complete-family APIs return `strategytrial.ErrFamilyPending`. Statistical
+assessments, new gate decisions, forward declarations/eligibility, forward
+bindings and incubation admission therefore refuse incomplete accounting. An
+existing historical gate/forward record remains readable; it cannot admit new
+exposure through a pending family. Manual trials and other sessions can still
+append history. Independent pending sessions each retain their own fence.
+Candidate simulation reads its frozen manifest and individual parents without
+requiring a family count, so it can finish while its family is fenced.
+
+An interrupted session recovers the exact reply from the registry receipt even
+if the desk reply append failed. It fills only missing starts; existing
+unfinished starts are marked crashed and never rerun, and finished starts retain
+their outcome and returns. Reconciliation appends a receipt only after all IDs
+exist in the family. A failed or uncertain intent, reply, start or resolution
+write never clears a fence prematurely. A lost resolution acknowledgement may
+expose the complete count because every start was already confirmed. Crashing
+after reconciliation but before the result append also leaves the full count.
+A call with no recoverable reply remains explicitly unavailable and is never
+relaunched; recovery must establish its captured attempts before accounting can
+become authoritative. This is a fail-closed contract, not a finite count that
+requires an operator to notice missing starts.
 
 A tool result exposes at most eight candidate entries and IDs to keep even a
 maximal rejected batch within the journal event bound. `show` discovers all
@@ -202,8 +220,12 @@ require resuming the exact declaration. The parser's finite input bound remains
 
 ## Durability and recovery
 
-`0123_research_desk_events.sql` is installed by the normal storage bootstrap
-under its migration lock and recorded in `mantik_schema`. The CLI opens that
+`0123_research_desk_events.sql` and `0125_strategy_trial_batches.sql` are
+installed by the normal storage bootstrap under its migration lock and recorded
+in `mantik_schema`. Schema 125 adds append-only call intents, exact reply
+receipts, and reconciliation receipts without changing existing trial/event
+bytes. Unfinished legacy call/reply events also fence their family before the
+first recovery under schema 125. The CLI opens that
 storage before opening the research journal. `research.OpenPostgresJournal`
 requires an initialized schema and performs no independent DDL. The migration
 can be replayed while retaining existing events.
@@ -236,9 +258,9 @@ A retained terminal tool result completes its missing terminal event without
 another model call. Rejected-output replies recover only failed attempt accounting
 and terminal status, never tool execution. All event clocks use microsecond
 precision before retention and hashing, matching PostgreSQL round trips.
-A call intent without a retained reply stops with `ErrInterrupted`; the system
-cannot know whether that subscription request ran. It never relaunches that
-uncertain request. Starts and partial stored returns still count toward search
+A call intent without a recoverable reply receipt stops with `ErrInterrupted`;
+the system cannot know whether that subscription request ran. Its family stays
+unavailable. It never relaunches that uncertain request. Starts and partial stored returns still count toward search
 multiplicity. Invalid tool JSON and invalid specs are retained as failed trial
 attempts, rather than disappearing in the parser.
 
@@ -257,7 +279,8 @@ post-cutoff warm-up and adjustment bounds, future clocks, trigger receipt
 binding, scoped gate reads, call limits and recovery without relaunch.
 Run `mise exec -- go test -race ./internal/research ./internal/model` with
 `GOFLAGS=-p=2 GOMAXPROCS=2`. `TestPostgresContractsResearchDesk` and
-`TestPostgresContractsResearchEvolution` run in the
+`TestPostgresContractsResearchEvolution` and
+`TestPostgresContractsResearchBatchFences` run in the
 existing disposable CLI integration shards through `make test-integration`.
 For a focused run, `MANTIK_TEST_DATABASE_URL` (or `MANTIK_DESK_TEST_DATABASE_URL`)
 must point at a newly created disposable database;

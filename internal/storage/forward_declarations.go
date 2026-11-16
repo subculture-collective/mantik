@@ -105,6 +105,9 @@ func (m *Memory) DeclareForward(ctx context.Context, d forward.Declaration, now 
 	if !ok {
 		return forward.Record{}, strategygate.ErrNotFound
 	}
+	if e := m.strategyFamilyReadyLocked(d.Family); e != nil {
+		return forward.Record{}, e
+	}
 	starts := []strategytrial.Start{}
 	for _, r := range m.strategyTrials {
 		if r.Start.Family == d.Family {
@@ -160,11 +163,9 @@ func (m *Memory) ForwardEligibility(ctx context.Context, id string, at time.Time
 	if e := m.validateForwardLocked(r); e != nil {
 		return forward.Eligibility{}, e
 	}
-	var n int64
-	for _, v := range m.strategyTrials {
-		if v.Start.Family == r.Declaration.Family {
-			n++
-		}
+	n, e := m.strategySearchTotalLocked(r.Declaration.Family)
+	if e != nil {
+		return forward.Eligibility{}, e
 	}
 	opened, e := account.ForwardHoldingOpened(m.cappedBooks[r.Declaration.BookID], r.Declaration.SleeveID, at)
 	if e != nil {
@@ -232,6 +233,9 @@ func (p *Postgres) DeclareForward(ctx context.Context, d forward.Declaration, no
 	if e != nil {
 		return forward.Record{}, e
 	}
+	if e := strategyFamilyReady(ctx, tx, d.Family); e != nil {
+		return forward.Record{}, e
+	}
 	rows, e := tx.Query(ctx, "SELECT payload FROM mantik_strategy_trials WHERE family=$1 ORDER BY id LIMIT $2", d.Family, d.MaxSearchTrials+1)
 	if e != nil {
 		return forward.Record{}, e
@@ -297,8 +301,8 @@ func (p *Postgres) ForwardEligibility(ctx context.Context, id string, at time.Ti
 	if e != nil {
 		return forward.Eligibility{}, e
 	}
-	var n int64
-	if e = tx.QueryRow(ctx, "SELECT count(*) FROM mantik_strategy_trials WHERE family=$1", r.Declaration.Family).Scan(&n); e != nil {
+	n, e := strategySearchTotal(ctx, tx, r.Declaration.Family)
+	if e != nil {
 		return forward.Eligibility{}, e
 	}
 	opened, e := account.ForwardHoldingOpened(b, r.Declaration.SleeveID, at)

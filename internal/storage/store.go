@@ -119,6 +119,9 @@ type Memory struct {
 	externalInputs              map[string]map[string][]byte
 	forwardDeclarations         map[string]forward.Record
 	strategyTrials              map[string]strategytrial.Record
+	strategyBatches             map[string]strategytrial.Batch
+	strategyBatchIntents        map[string]string
+	resolvedStrategyBatches     map[string]bool
 	trialRuns                   map[string]trial.Run
 	trialInputs                 map[string]string
 	trialResults                map[string]string

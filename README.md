@@ -71,8 +71,9 @@ quotes and zero fees or slippage.
   quarter-Kelly post-only intents within the separate notional book.
 - **Advisory research desk**: [bounded model tools](docs/reference/research-desk.md)
   compose inactive typed ideas, evolve and select variants using retained
-  complexity/library-similarity penalties, count every proposal, and run
-  post-cutoff simulations without gate or trading authority.
+  complexity/library-similarity penalties and count every proposal. Durable
+  family fences block statistical and admission readers during interrupted
+  batches. Post-cutoff simulations confer no gate or trading authority.
 - **Subscription research calls**: the [model adapter](docs/reference/subscription-models.md)
   runs bounded Claude and Codex prompts using host logins, with a durable daily
   call budget and hash records, independently of trading.
