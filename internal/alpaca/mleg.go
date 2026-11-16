@@ -47,13 +47,24 @@ type MLegOrder struct {
 	Legs          []MLeg `json:"legs,omitempty"`
 }
 
-// MLegOpen pins the admission evidence and exact wire order. Chain estimates are
-// caller-supplied indicative evidence, never live quotes or qualification.
+// PaperAtomicNetV1 binds atomic package premium accounting and a modeled $0.65
+// per contract fee allowance for three rounds. It grants no live trading authority.
+const PaperAtomicNetV1 = "paper-atomic-net-premium-fee065x3-v1"
+
+// ErrOptionQuarantined means contradictory execution custody requires inspection.
+var ErrOptionQuarantined = errors.New("option execution custody quarantined")
+
+// ErrOptionPolicy denies mutation of legacy or unknown-policy lifecycles.
+var ErrOptionPolicy = errors.New("explicit supported paper execution policy required; inspection only")
+
+// MLegOpen pins the policy, admission evidence and exact wire order. Chain
+// estimates are caller-supplied indicative evidence, never live qualification.
 type MLegOpen struct {
-	Funding   account.CappedState
-	Order     MLegOrder
-	Chain     options.Chain
-	Structure options.Structure
+	ExecutionPolicy string `json:",omitempty"`
+	Funding         account.CappedState
+	Order           MLegOrder
+	Chain           options.Chain
+	Structure       options.Structure
 }
 
 // OptionPaperOrder retains parent and child venue identity and cumulative fills.
@@ -147,8 +158,9 @@ func (o MLegOpen) validate(now time.Time) error {
 		}
 		net.Add(net, new(big.Rat).Mul(price, big.NewRat(int64(n), 1)))
 	}
-	// The signed package limit must be at least as conservative as the per-leg
-	// admission limits; never use a cheaper risk declaration to send a dearer order.
+	// Per-leg prices are model/admission assumptions, not wire-enforced caps.
+	// The signed package limit must be at least as conservative as these prices;
+	// never use a cheaper risk declaration to send a dearer order.
 	limit, _ := new(big.Rat).SetString(o.Order.LimitPrice)
 	if new(big.Rat).Mul(limit, big.NewRat(int64(q), 1)).Cmp(net) > 0 {
 		return errors.New("package limit exceeds admitted leg limits")
@@ -198,10 +210,13 @@ func (p *PaperTrader) OpenMLeg(ctx context.Context, o MLegOpen, beforePost func(
 			return OptionPaperOrder{}, errors.New("mleg requires a dedicated unused paper journal")
 		}
 	}
+	if o.ExecutionPolicy != PaperAtomicNetV1 {
+		return OptionPaperOrder{}, ErrOptionPolicy
+	}
 	if beforePost == nil {
 		return OptionPaperOrder{}, errors.New("opening requires local admission immediately before POST")
 	}
-	if _, err = o.LocalFunding(p.account); err != nil {
+	if err = p.optionOpeningFunding(o); err != nil {
 		return OptionPaperOrder{}, err
 	}
 	if err = o.validate(time.Now().UTC()); err != nil {
@@ -228,6 +243,9 @@ func (p *PaperTrader) optionSubmit(ctx context.Context, r optionRequest) (Option
 	return p.optionSubmitChecked(ctx, r, nil)
 }
 func (p *PaperTrader) optionSubmitChecked(ctx context.Context, r optionRequest, beforePost func() error) (OptionPaperOrder, error) {
+	if err := p.optionMutationAuthority(); err != nil {
+		return OptionPaperOrder{}, err
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return OptionPaperOrder{}, err
@@ -252,9 +270,7 @@ func (p *PaperTrader) optionSubmitChecked(ctx context.Context, r optionRequest, 
 	}
 	body, status, err := p.request(ctx, http.MethodPost, "/v2/orders", raw)
 	if err == nil && status >= 200 && status < 300 {
-		if o, e := decodeOptionOrder(body, r); e == nil {
-			return o, nil
-		}
+		return p.optionObserve(body, r)
 	}
 	// Only a retained numeric API validation refusal is deterministic. Mutable
 	// message text, timeouts, 5xx, authentication and ambiguous replies never are.
@@ -284,16 +300,15 @@ func (p *PaperTrader) optionLookup(ctx context.Context, r optionRequest) (Option
 	if status != 200 {
 		return OptionPaperOrder{}, ErrSubmissionUnknown
 	}
-	o, err := decodeOptionOrder(raw, r)
-	if err != nil {
-		return OptionPaperOrder{}, ErrSubmissionUnknown
-	}
-	return o, nil
+	return p.optionObserve(raw, r)
 }
 
 func decodeOptionOrder(raw []byte, r optionRequest) (OptionPaperOrder, error) {
 	var o OptionPaperOrder
-	if json.Unmarshal(raw, &o) != nil || !paperID.MatchString(o.ID) || o.ClientOrderID != r.ClientOrderID || o.Type != r.Type || o.TimeInForce != r.TimeInForce || !samePaperDecimal(o.Qty, r.Qty) || !samePaperDecimal(o.LimitPrice, r.LimitPrice) || !optionStatus(o.Status) {
+	if !validOptionRequest(r) {
+		return o, errors.New("invalid retained option request")
+	}
+	if json.Unmarshal(raw, &o) != nil || !paperDecimal.MatchString(o.Qty) || !signedOptionLimit(o.LimitPrice) || !paperID.MatchString(o.ID) || o.ClientOrderID != r.ClientOrderID || o.Type != r.Type || o.TimeInForce != r.TimeInForce || !samePaperDecimal(o.Qty, r.Qty) || !samePaperDecimal(o.LimitPrice, r.LimitPrice) || !optionStatus(o.Status) {
 		return o, errors.New("option order response mismatches retained request")
 	}
 	if r.OrderClass == "mleg" {
@@ -331,6 +346,9 @@ func decodeOptionOrder(raw []byte, r optionRequest) (OptionPaperOrder, error) {
 			return o, errors.New("invalid closing option response")
 		}
 	}
+	if err := atomicOptionExecution(o, r); err != nil {
+		return o, err
+	}
 	return o, nil
 }
 func filledContracts(o OptionPaperOrder) (int, bool) {
@@ -350,7 +368,7 @@ func validOptionParent(o OptionPaperOrder, q int) bool {
 }
 func validOptionFill(o OptionPaperOrder, q int) bool {
 	n, ok := filledContracts(o)
-	return ok && n <= q && (n == 0 || o.FilledAvgPrice != nil && positivePaperDecimal(*o.FilledAvgPrice)) && (o.Status != "filled" || n == q)
+	return ok && n <= q && optionStatus(o.Status) && (n == 0 || o.FilledAvgPrice != nil && positivePaperDecimal(*o.FilledAvgPrice)) && (o.Status != "filled" || n == q)
 }
 func optionStatus(s string) bool {
 	return slices.Contains([]string{"new", "accepted", "pending_new", "partially_filled", "filled", "canceled", "expired", "rejected", "pending_cancel", "done_for_day", "stopped", "suspended", "calculated", "replaced", "pending_replace", "accepted_for_bidding"}, s)

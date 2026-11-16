@@ -93,6 +93,9 @@ func (p *PaperTrader) CloseMLeg(ctx context.Context, plan MLegClose) (MLegCloseR
 	if err != nil {
 		return out, err
 	}
+	if err = p.optionMutationAuthority(); err != nil {
+		return out, err
+	}
 	if !optionTerminal(out.Open.Status) {
 		out.Open, err = p.optionCancelTerminal(ctx, opening, out.Open)
 		if err != nil {
@@ -257,7 +260,7 @@ func (p *PaperTrader) CloseMLeg(ctx context.Context, plan MLegClose) (MLegCloseR
 			}
 			request := closingLeg(whole, optionLegID(open.Order.ClientOrderID, i), l, remaining[i], plan.LegLimits[i])
 			if request.Side == "buy" {
-				if err = p.optionFallbackFunding(open, out.Open, initial, out.Whole, recovered, request); err != nil {
+				if err = p.optionFallbackFunding(open, out.Open, out.Whole, recovered, request); err != nil {
 					return out, err
 				}
 			}
@@ -298,6 +301,9 @@ func signedRemaining(legs []MLeg, qty []int) []int {
 	return out
 }
 func (p *PaperTrader) optionCancelTerminal(ctx context.Context, r optionRequest, o OptionPaperOrder) (OptionPaperOrder, error) {
+	if err := p.optionMutationAuthority(); err != nil {
+		return o, err
+	}
 	_, status, err := p.request(ctx, http.MethodDelete, "/v2/orders/"+url.PathEscape(o.ID), nil)
 	if err != nil || status != 204 && status != 422 {
 		return o, ErrOptionPending
@@ -322,7 +328,7 @@ func (p *PaperTrader) optionInventoryForFallback(ctx context.Context, legs []MLe
 	return p.optionInventory(ctx, legs, signedRemaining(legs, remaining))
 }
 func (p *PaperTrader) optionCloseFunding(open MLegOpen, filled OptionPaperOrder, plan MLegClose, qty []int) error {
-	cash, err := p.optionCloseCash(open, filled, qty)
+	cash, err := p.optionCloseCash(open, filled)
 	if err != nil {
 		return err
 	}
@@ -333,10 +339,8 @@ func (p *PaperTrader) optionCloseFunding(open MLegOpen, filled OptionPaperOrder,
 			buys.Add(buys, new(big.Rat).Mul(limit, big.NewRat(int64(qty[i]*100), 1)))
 		}
 	}
-	whole, _ := new(big.Rat).SetString(plan.LimitPrice)
 	ratio, _ := optionInteger(open.Order.Legs[0].RatioQty)
-	units := qty[0] / ratio
-	whole.Mul(whole, big.NewRat(int64(units*100), 1))
+	whole := optionPremiumAllowance(plan.LimitPrice, qty[0]/ratio)
 	if whole.Cmp(buys) > 0 {
 		buys.Set(whole)
 	}
@@ -346,62 +350,42 @@ func (p *PaperTrader) optionCloseFunding(open MLegOpen, filled OptionPaperOrder,
 	return nil
 }
 
-func (p *PaperTrader) optionCloseCash(open MLegOpen, filled OptionPaperOrder, qty []int) (*big.Rat, error) {
+func (p *PaperTrader) optionCloseCash(open MLegOpen, filled OptionPaperOrder) (*big.Rat, error) {
 	localCash, err := open.LocalFunding(p.account)
 	if err != nil {
 		return nil, err
 	}
 	cash, _ := new(big.Rat).SetString(localCash)
-	fees := new(big.Rat)
-	total := 0
-	for i, l := range open.Order.Legs {
-		n := qty[i]
-		total += n
-		if l.Side == "buy" && n > 0 {
-			price, _ := new(big.Rat).SetString(*filled.Legs[i].FilledAvgPrice)
-			cash.Sub(cash, new(big.Rat).Mul(price, big.NewRat(int64(n*100), 1)))
-		}
-	}
-	// Reserve both potential whole and fallback execution fees; no unreceived or
-	// unsettled sale premium is available to fund short buybacks.
-	fees.Mul(big.NewRat(65, 100), big.NewRat(int64(total*3), 1))
-	cash.Sub(cash, fees)
+	// A terminal package consumes its transmitted positive limit for filled units.
+	// Improvements and credits never replenish cash for a separate order.
+	n, _ := filledContracts(filled)
+	cash.Sub(cash, optionPremiumAllowance(open.Order.LimitPrice, n))
+	cash.Sub(cash, optionFeePool(open))
 	return cash, nil
 }
 
 // A terminal whole close may have spent part of the dedicated cash. Reconcile
-// its child buys and every previous fallback buy before authorizing another.
-// Observed sales remain unavailable; the full fee bound stays reserved.
-func (p *PaperTrader) optionFallbackFunding(open MLegOpen, filled OptionPaperOrder, qty []int, whole OptionPaperOrder, previous map[int]OptionPaperOrder, request optionRequest) error {
-	cash, err := p.optionCloseCash(open, filled, qty)
+// its package allowance and every previous fallback buy before authorizing another.
+// Observed sales remain unavailable; the full modeled fee pool stays reserved.
+func (p *PaperTrader) optionFallbackFunding(open MLegOpen, filled OptionPaperOrder, whole OptionPaperOrder, previous map[int]OptionPaperOrder, request optionRequest) error {
+	cash, err := p.optionCloseCash(open, filled)
 	if err != nil {
 		return err
 	}
-	orders := []OptionPaperOrder{whole}
-	for _, order := range previous {
-		orders = append(orders, order)
-	}
-	for _, order := range orders {
-		legs := order.Legs
-		if len(legs) == 0 && order.ID != "" {
-			legs = []OptionPaperOrder{order}
+	if whole.ID != "" {
+		n, ok := filledContracts(whole)
+		if !ok || !optionChildrenTerminal(whole) {
+			return errors.New("whole-close consumption unknown; protection retained")
 		}
-		for _, leg := range legs {
-			if leg.Side != "buy" {
-				continue
+		cash.Sub(cash, optionPremiumAllowance(whole.LimitPrice, n))
+	}
+	for _, order := range previous {
+		if order.Side == "buy" {
+			n, ok := filledContracts(order)
+			if !ok || !optionTerminal(order.Status) {
+				return errors.New("fallback consumption unknown; protection retained")
 			}
-			n, ok := filledContracts(leg)
-			if !ok {
-				return errors.New("invalid option close fill quantity")
-			}
-			if n == 0 {
-				continue
-			}
-			if leg.FilledAvgPrice == nil || !positivePaperDecimal(*leg.FilledAvgPrice) {
-				return errors.New("option close buy has no usable price")
-			}
-			price, _ := new(big.Rat).SetString(*leg.FilledAvgPrice)
-			cash.Sub(cash, price.Mul(price, big.NewRat(int64(n*100), 1)))
+			cash.Sub(cash, optionPremiumAllowance(order.LimitPrice, n))
 		}
 	}
 	n, ok := optionInteger(request.Qty)

@@ -13,8 +13,17 @@ It is not live trading, profitability evidence or forward qualification.
 
 ## Opening input and admission
 
-The opening JSON has four fields, matching `alpaca.MLegOpen`:
+The opening JSON has five fields, matching `alpaca.MLegOpen`:
 
+- `ExecutionPolicy`: exactly `"paper-atomic-net-premium-fee065x3-v1"`
+  (`alpaca.PaperAtomicNetV1`). Mandatory for every new lifecycle. This immutable
+  paper-only policy binds atomic net premium accounting and a modeled fee
+  allowance of $0.65 per requested contract for three rounds (opening, whole
+  close and fallback). There are no configurable fee or netting switches.
+  Missing and unknown policies cannot submit. Retained legacy/unknown work
+  permits GET inspection only: no new whole/fallback POST, cancellation DELETE,
+  or automatic closed declaration. An exact retry cannot change the policy;
+  adding a policy to retained legacy work conflicts.
 - `Order`: `client_order_id`, integer-string strategy `qty`, `type: "limit"`,
   `time_in_force: "day"` or `"gtc"`, signed decimal-string `limit_price`,
   `order_class: "mleg"`, and `legs`. Each leg has `symbol`, positive
@@ -26,7 +35,10 @@ The opening JSON has four fields, matching `alpaca.MLegOpen`:
 - `Structure`: the #84 `options.Structure`, with `Kind` and `Legs`. Signed
   `Contracts` must equal wire strategy units times each signed ratio, in the
   same leg order. `Multiplier` is 100. `Limit` is dollars per underlying share.
-  The package limit must not spend more than these admitted per-leg limits.
+  The signed package limit times strategy units must not exceed the sum of
+  signed contracts times these admitted prices, including for net credits.
+  Per-leg prices are model/admission assumptions, not wire-enforced child caps;
+  Alpaca receives only a signed package limit.
   Supported kinds are `long_options`, `vertical`, `iron_condor` and
   `iron_butterfly`. Stock/option combinations, covered calls and cash-secured
   single puts are outside this multi-leg route.
@@ -56,7 +68,10 @@ before the initial POST, after preparatory GETs and durable intent retention.
 Use this wrapper for integrations; the adapter's required callback is a trusted
 internal boundary, not strategy authority. No simulated fill is treated as a
 broker fill. Risk fractions, minimum margin equity, gross/position/sleeve caps,
-cash floor, dedicated reserves and gross Greek caps all remain enforced.
+cash floor, maximum-loss-plus-worst-partial reserve and gross Greek caps all
+remain enforced. The admission book still projects gross buy premiums and holds
+its conservative reserve; the atomic paper contract does not change
+`internal/account` or indicative engine execution/settlement semantics.
 The POST clock rechecks contract expiry, spot age and each traded option's
 price age against the declared maximum. The original source cutoff and
 observation clocks remain retained unchanged.
@@ -87,6 +102,8 @@ write-once publication and fsync fence the only POST for each client ID. Exact
 retries are GET-only, including after restart, a 404, rollover, or a crash between
 retaining the lifecycle and sending the wire intent. Changed requests conflict.
 A refused admission consumes that identity; no subsequent retry can submit it.
+The dedicated option journal also refuses stock submissions and generic stock
+cancellation, so those actions cannot bypass the lifecycle fences.
 
 All raw HTTP responses use the existing `paper-response-*` records: method,
 path, status, receipt clock, SHA-256, completeness flag and original bytes.
@@ -94,15 +111,34 @@ Parent and child venue IDs, symbols, sides, quantities, cumulative filled
 quantities and prices must match the retained request. Child ordering may vary;
 it is normalized to opening leg order. Duplicate IDs, missing children,
 fractional/overfilled quantities and missing positive child fill prices fail
-closed. Parent status alone never establishes a fill.
+closed. For parent filled units `f`, every child must have exactly `f × ratio`
+filled contracts. With nonzero fills, exact decimal arithmetic must establish
+`parentAverage × f = Σ(sideSign × childAverage × childFilledQuantity)` and
+`parentAverage <= transmittedSignedLimit`. Simple fallback buys must execute at
+or below their buy limit; sales at or above their sell limit. The decimal grammar
+accepts up to nine fractional digits; no rounding tolerance or inferred reporting
+precision is invented. Unreconcilable rounded or missing precision fails closed.
+Parent status alone never establishes a fill.
+
+The first observed parent/child IDs and cumulative fills bind subsequent
+responses. Changed IDs, quantity regressions, changed averages without new fills,
+terminal fill changes, terminal-to-pending regression, malformed custody, net
+disagreement and limit
+breaches create a persistent quarantine. Later convenient GET replies cannot
+restore POST, DELETE or closed-declaration authority, even after restart or
+rollover. Raw GET inspection remains available. Transport uncertainty, 404 and
+5xx remain ordinary GET-only recovery, not contradictions by themselves.
+Normalized observations use retained `paper-intent-mleg-observation-*` records;
+unchanged responses add none. More than 1,024 changed observations require
+manual inspection; the route stops rather than dropping custody history.
 
 Use the existing `fills` action with an explicit lower time bound to retain
 original activity records and venue fee fields. Order cumulative fill quantities
 control close sizing; this route does not assert complete fee reconciliation or
 ledger equity from those order snapshots. Archive the journal and retain its
 archive SHA-256 before handing evidence off. Rollover exports raw responses and
-keeps every lifecycle, request, refusal and close-plan fence in the active
-journal. No migration or development/production database is required.
+keeps every lifecycle, request, refusal, observation, quarantine and close-plan
+fence in the active journal. No migration or development/production database is required.
 
 ## Whole close and fallback
 
@@ -117,10 +153,14 @@ operators can inspect known orders and remaining quantities.
    are terminal. No polling is hidden: a pending result requires repeating the
    exact command. Only proportional, actually filled opening quantities can
    enter a whole close. An opening with no fills needs no close order.
-2. Check dedicated settled funding for the whole-close debit and every short
-   buyback limit, including conservative execution fees. Opening long premiums
-   reduce available cash. Unsettled short premiums and future long-sale proceeds
-   do not fund buybacks. Other orders' reserves and unowned stock never do.
+2. Check the opening and whole-close package allowances against dedicated cash
+   **before POST**. A package reserves `100 × requestedUnits × max(signedLimit, 0)`
+   plus the independent retained fee pool. A terminal package consumes
+   `100 × filledUnits × max(signedLimit, 0)`: price improvements are not reclaimed.
+   Unknown outstanding units remain reserved and cannot authorize fallback.
+   Opening package credits never grow available cash. The whole close also
+   retains the conservative requirement that all proposed separate fallback buy
+   limits fit. Other orders' reserves and unowned stock never fund this lifecycle.
 3. Submit the reversed mleg with explicit per-leg closing intents. Before any
    new close POST, check exact owned option inventory and overlapping pending
    orders. Other symbols in the account are never adjusted. A full 500-order
@@ -134,9 +174,13 @@ operators can inspect known orders and remaining quantities.
    API codes never establish refusal.
 5. Subtract each whole-close child fill from the owned opening quantities.
    Recover any earlier fallback requests before comparing live inventory.
-   Before every new short buyback, deduct actual whole-close child buy debits
-   and prior fallback buy debits from dedicated cash, keeping the fee bound
-   reserved and sale proceeds unavailable. An insufficient balance stops
+   Before every new short buyback, deduct the opening package LIMIT consumption,
+   whole-close package LIMIT consumption, prior simple fallback BUY LIMIT
+   consumption for filled contracts, and the entire fixed fee pool from original
+   dedicated cash. The next buy must fit at its transmitted positive limit.
+   Never add signed lifecycle nets together before taking their positive part:
+   a later credit cannot erase an earlier debit. Neither an opening/whole-close
+   credit nor a fallback sale funds another order. An insufficient balance stops
    further buys and retains the remaining protection, including after restart.
    Buy all remaining shorts closed, confirming their exact filled quantities
    and terminal status. Only when **every** short liability is zero may the
@@ -149,8 +193,27 @@ A terminal partially filled or rejected fallback leg cannot be replaced through
 this route. The remaining protection stays held and the same command reports
 pending; operator reconciliation is required. Changed inventory, another pending
 order on these symbols, assignment/exercise, a non-proportional opening fill,
-unknown venue state or insufficient funding also stops automatic progress.
+unknown venue state, quarantine or insufficient funding also stops automatic
+progress.
 Preserve the journal and original IDs when resolving those conditions.
+
+## Atomic premium and modeled-fee limits
+
+Netting is permitted only **within one atomic mleg package** under the explicit
+policy. A coherent $3,000 buy/$3,002 sale opening package consumes no positive
+premium allowance; a $3,000 buyback/$2,998 sale whole close at a $0.02 unit limit
+consumes $2 per filled strategy unit. Both retain the independent fee pool and
+all original admission restrictions. Those sales create no spendable credit for
+separate orders, and closing never releases or recycles the lifecycle budget.
+
+The $0.65 allowance is a **modeled fee allowance for this paper contract**, not a
+universal live-fee guarantee. Live regulatory fees can depend on gross sale
+value, which a net package price does not bound. Alpaca paper simulation omits
+some actual fees and execution effects. Exact reporting precision, real fills,
+actual fee custody and live cash guarantees remain unqualified. A limit can
+leave a short buyback unfilled; safe fallback preserves protection and does not
+guarantee liquidation. See [paper simulation limits](https://docs.alpaca.markets/us/docs/paper-trading)
+and [brokerage fee schedule](https://files.alpaca.markets/disclosures/BrokFeeSched.pdf).
 
 ## Coordinator's real-paper preflight
 
@@ -158,9 +221,11 @@ Before the real regular-session test, verify the combined source head and its
 checks; inspect the expected paper account, options level, current permissions,
 standard contracts, session and current prices. Prepare an attributable chain,
 a genuinely funded dedicated capped ledger and immutable opening/close inputs.
-Check actual OptionBook admission before attempting execution. An initial $2,000
-spread refusal is a blocker, not permission to bypass the cap. Reserve cash for
-short buybacks and fees without relying on selling the protective longs.
+Select and retain the explicit execution policy. Check actual OptionBook
+admission before attempting execution. An initial $2,000 spread refusal is a
+blocker, not permission to bypass the cap. Reserve the whole-close package
+allowance, all separate short-buyback limits and modeled fees without spending
+credits from other orders.
 
 Retain the exact open request, parent/child venue IDs, raw fills, whole-close
 request and result, any cancellation/partial/fallback sequence, fee evidence and

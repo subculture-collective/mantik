@@ -3,6 +3,7 @@ package alpaca
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -30,7 +31,8 @@ func (x mlegFundingTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		_ = json.Unmarshal(raw, &o)
 		if strings.HasPrefix(o.ClientOrderID, "mleg-close-") {
 			// The whole close terminates after buying back only one short side.
-			// The complete parent debit is within qty*limit; every child remains owned.
+			// This deliberately contradicts atomic parent/child quantities and net.
+			// It must quarantine immediately, before any fallback authority.
 			price := "12.4"
 			o.Legs[1].FilledQty = strconv.Itoa(x.wholeContracts)
 			o.Legs[1].FilledAvgPrice = &price
@@ -44,7 +46,7 @@ func (x mlegFundingTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	return res, nil
 }
-func TestMLegWholeFillCashCannotFundFallbackAgain(t *testing.T) {
+func TestMLegNonproportionalWholeCashReportQuarantines(t *testing.T) {
 	for _, wholeContracts := range []int{1, 2} {
 		t.Run(strconv.Itoa(wholeContracts), func(t *testing.T) {
 			v, p, root := newFakeMlegVenue(t)
@@ -81,10 +83,10 @@ func TestMLegWholeFillCashCannotFundFallbackAgain(t *testing.T) {
 			plan.LegLimits[1] = "6.2"
 			plan.LegLimits[2] = "6.2"
 			result, err := p.CloseMLeg(context.Background(), plan)
-			if err == nil || !strings.Contains(err.Error(), "dedicated settled funding") || result.State == "closed" {
+			if !errors.Is(err, ErrOptionQuarantined) || result.State == "closed" {
 				t.Fatalf("spent cash authorized fallback: %+v %v", result, err)
 			}
-			expectedPosts := 4 - wholeContracts
+			expectedPosts := 2
 			if len(v.posts) != expectedPosts {
 				t.Fatal("fallback posted after whole close consumed cash", v.posts)
 			}

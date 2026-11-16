@@ -223,6 +223,9 @@ func (p *PaperTrader) SubmitChecked(ctx context.Context, o StockOrder, beforePos
 	if err := p.bind(ctx); err != nil {
 		return PaperOrder{}, err
 	}
+	if err := p.requireStockJournal(); err != nil {
+		return PaperOrder{}, err
+	}
 	if _, err := p.journal.read("paper-abort-"+o.ClientOrderID+".json", MaxBytes); err == nil {
 		return PaperOrder{}, ErrPaperNotSubmitted
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -309,6 +312,9 @@ func (p *PaperTrader) Cancel(ctx context.Context, clientID string) error {
 	}
 	defer func() { <-p.gate }()
 	if err := p.bind(ctx); err != nil {
+		return err
+	}
+	if err := p.requireStockJournal(); err != nil {
 		return err
 	}
 	raw, err := p.journal.read("paper-intent-"+clientID+".json", MaxBytes)

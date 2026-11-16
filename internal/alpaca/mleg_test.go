@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 )
 
 func mlegFixtureOpen() MLegOpen {
-	o := MLegOpen{Order: MLegOrder{ClientOrderID: "condor-open", Qty: "2", OrderClass: "mleg", Type: "limit", TimeInForce: "day", LimitPrice: "-0.02"}, Chain: options.Chain{AsOf: time.Now().UTC(), Underlying: "TST"}, Structure: options.Structure{Kind: "iron_condor"}}
+	o := MLegOpen{ExecutionPolicy: PaperAtomicNetV1, Order: MLegOrder{ClientOrderID: "condor-open", Qty: "2", OrderClass: "mleg", Type: "limit", TimeInForce: "day", LimitPrice: "-0.02"}, Chain: options.Chain{AsOf: time.Now().UTC(), Underlying: "TST"}, Structure: options.Structure{Kind: "iron_condor"}}
 	o.Funding, _ = account.NewCappedState(account.DefaultCappedConfig("dedicated-options", "account-1", account.Margin, o.Chain.AsOf.Add(-time.Hour)))
 	for i, symbol := range []string{"TST261218P00000900", "TST261218P00000950", "TST261218C00001050", "TST261218C00001100"} {
 		side, n, limit := "buy", 2, .01
@@ -32,16 +33,37 @@ func mlegFixtureOpen() MLegOpen {
 	return o
 }
 func mlegResponse(r optionRequest, fill int, status string) OptionPaperOrder {
-	price := "0.01"
+	price := r.LimitPrice
 	o := OptionPaperOrder{PaperOrder: PaperOrder{ID: "venue-" + r.ClientOrderID, ClientOrderID: r.ClientOrderID, Qty: r.Qty, Type: r.Type, TimeInForce: r.TimeInForce, LimitPrice: r.LimitPrice, Status: status, FilledQty: strconv.Itoa(fill)}, OrderClass: r.OrderClass, PositionIntent: r.PositionIntent}
 	if fill > 0 {
 		o.FilledAvgPrice = &price
 	}
 	if r.OrderClass == "mleg" {
 		q, _ := optionInteger(r.Qty)
+		prices := make([]string, len(r.Legs))
+		net := new(big.Rat)
+		for i, l := range r.Legs {
+			prices[i] = "0.01"
+			ratio, _ := optionInteger(l.RatioQty)
+			if l.Side == "sell" {
+				ratio = -ratio
+			}
+			net.Add(net, big.NewRat(int64(ratio), 100))
+		}
+		limit, _ := new(big.Rat).SetString(r.LimitPrice)
+		delta := new(big.Rat).Sub(limit, net)
+		for i, l := range r.Legs {
+			if delta.Sign() >= 0 && l.Side == "buy" || delta.Sign() < 0 && l.Side == "sell" {
+				ratio, _ := optionInteger(l.RatioQty)
+				add := new(big.Rat).Quo(new(big.Rat).Abs(delta), big.NewRat(int64(ratio), 1))
+				prices[i] = add.Add(add, big.NewRat(1, 100)).FloatString(9)
+				break
+			}
+		}
 		for i, l := range r.Legs {
 			ratio, _ := optionInteger(l.RatioQty)
-			o.Legs = append(o.Legs, OptionPaperOrder{PaperOrder: PaperOrder{ID: fmt.Sprintf("%s-leg%d", o.ID, i), Symbol: l.Symbol, Side: l.Side, Qty: strconv.Itoa(q * ratio), FilledQty: strconv.Itoa(fill * ratio), FilledAvgPrice: o.FilledAvgPrice, Status: status}, PositionIntent: l.PositionIntent})
+			childPrice := prices[i]
+			o.Legs = append(o.Legs, OptionPaperOrder{PaperOrder: PaperOrder{ID: fmt.Sprintf("%s-leg%d", o.ID, i), Symbol: l.Symbol, Side: l.Side, Qty: strconv.Itoa(q * ratio), FilledQty: strconv.Itoa(fill * ratio), FilledAvgPrice: &childPrice, Status: status}, PositionIntent: l.PositionIntent})
 		}
 	} else {
 		o.Symbol = r.Symbol
@@ -53,6 +75,7 @@ func mlegResponse(r optionRequest, fill int, status string) OptionPaperOrder {
 // fakeMlegVenue supplies only test transports. Positions come from the exact
 // returned child fill quantities, so fallback safety checks see every partial.
 type fakeMlegVenue struct {
+	deletes            int
 	incompletePending  bool
 	cancelLegFills     []int
 	closeLookupMissing bool
@@ -209,6 +232,7 @@ func (v *fakeMlegVenue) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(pos)
 	case strings.HasPrefix(r.URL.Path, "/v2/orders/") && r.Method == http.MethodDelete:
+		v.deletes++
 		id := strings.TrimPrefix(r.URL.Path, "/v2/orders/")
 		for client, o := range v.orders {
 			if o.ID == id && !v.cancelPending {
@@ -725,23 +749,14 @@ func TestMLegGatePreventsConcurrentLifecycleMutation(t *testing.T) {
 	}
 }
 
-func TestMLegCanceledWholeUsesEachChildFill(t *testing.T) {
+func TestMLegCanceledWholeNonproportionalFillQuarantines(t *testing.T) {
 	v, p, _ := newFakeMlegVenue(t)
 	testOpenMleg(t, p, mlegFixtureOpen())
 	v.whole = "new"
 	v.cancelLegFills = []int{0, 1, 1, 0}
 	result, err := p.CloseMLeg(context.Background(), mlegPlan())
-	if err != nil || result.State != "closed" {
-		t.Fatal(result, err)
-	}
-	for i, r := range v.posts[2:] {
-		want := "1"
-		if i >= 2 {
-			want = "2"
-		}
-		if r.Qty != want {
-			t.Fatal("sized from parent instead of child fills", r)
-		}
+	if !errors.Is(err, ErrOptionQuarantined) || result.State == "closed" || len(v.posts) != 2 {
+		t.Fatal("nonproportional close authorized fallback", result, err, v.posts)
 	}
 }
 func TestMLegNonProportionalOpenerStopsBeforeClose(t *testing.T) {
