@@ -22,10 +22,13 @@ choose a development or production database implicitly.
 - `--action init --input config.json` retains `Config`, an ordinary
   `account.CappedConfig` with the same ID. Use the intended $2,000 book and $500
   biweekly flow configuration. Init does not contact or fund a broker.
-- `--action run --input cycle.json` compiles the reviewed library/expression
-  recipes, makes decisions, retains sizing and submits eligible paper orders.
+- `--action run --input cycle.json` compiles reviewed library/expression recipes
+  or loads a retained analyst receipt, makes decisions and retains sizing.
   It also requires `--journal`, `--credentials-file` and `--account-id`, using
   the existing private journal and mode-0600 paper credential contracts.
+  This standalone action has no attached safety worker, so new positions require
+  `--action supervise` with the separate `--safety-config` policy described below.
+  Protective work and GET-only recovery remain available.
 - `--action sync --input observation.json` requires the same paper adapter
   flags. It reads the original client IDs and owned fill activities, retains
   both fill results and emits the cost-conservative return report.
@@ -39,10 +42,11 @@ A run input has these fields (Go JSON field names are accepted):
 | `ID` | Unique cycle ID, at most 60 characters so the derived rebalance ID fits. Retry the exact same file to recover a response. |
 | `DecidedAt` | Strategy-view clock; it must follow all previously retained book receipts and gate decisions. |
 | `ExecuteAt` | Later execution clock. A new submission must still be within 60 seconds of this clock and of the execution quote. |
-| `Strategies` | Complete active roster. Each entry binds `SleeveID`, `GateID`, positive daily-volatility `Risk`, `Assets`, and exactly one `Library` configuration or `Expression` definition. |
-| `Bars`, `Actions`, `Universe` within each strategy | Retained source material with original knowledge clocks. Bars bind the executable symbol as both `AssetID` and `Symbol`; a stable-ID-to-symbol resolver is not included here. Supply a reviewed universe when the recipe declares it. Option-chain strategies need a chain-capable application source and are outside this stock CLI adapter. |
+| `Strategies` | Complete active roster. A recipe entry binds `SleeveID`, `GateID`, positive daily-volatility `Risk`, `Assets`, and exactly one `Library` configuration or `Expression` definition. Alternatively, `AnalystCycleID` selects a retained analyst cycle from the configured subscription journal; supplied owner/source bindings must match that receipt. |
+| `Bars`, `Actions`, `Universe` within each strategy | Recipe source material with original knowledge clocks. Bars bind the executable symbol as both `AssetID` and `Symbol`; a stable-ID-to-symbol resolver is not included here. Supply a reviewed universe when the recipe declares it. Analyst entries obtain sources from their retained receipt and refuse caller-supplied replacements. Option-chain strategies need a chain-capable application source and are outside this stock CLI adapter. |
 | `Calendar` | Retained exchange-calendar coverage: `From`, `Through`, `SourceSHA256`, `ObservedAt`, `Sessions` with `Date`, `OpenAt`, `CloseAt`. Coverage must include every required warmup session through the current New York date. Observation must precede the decision and be at most 24 hours old. Keep original response bytes in private custody. |
 | `Protective` | Optional `true` requests a flat target for every retained sleeve owner. It cannot add risk or change ownership, skips recipe compilation and strategy data/builds, and uses retained costs and state. Fresh executable quotes and limits remain required. |
+| `Qualification` | Optional assessment-plan and benchmark collection input for supported compiled recipes. Storage recomputes the retained decision sources; callers cannot supply `DecisionSources` or a passing result. See the [assessment contract](forward-assessments.md). |
 | `Quotes` | Map from executable symbol to `account.IncubationQuote`: `Symbol`, decimal `Bid`, `Ask`, `BidQuantity`, `AskQuantity`, original `SourceSHA256`, `EvidenceClass`, `OccurredAt`, `ReceivedAt`. Sizes are shares, not unverified provider-native units. |
 | `Limits`, `Fees` | Explicit symbol-to-decimal day-limit prices and conservative total venue-fee bounds. These are reviewed execution inputs, never strategy or model output. |
 
