@@ -324,3 +324,10 @@ reconciliation, hard sizing and final submission checks still apply. A one-shot
 Analyst lookup is lazy so unavailable model evidence cannot stop the independent
 safety worker. See the [model analyst contract](model-analyst.md) for custody,
 metadata, call limits and qualification boundaries.
+
+For owner-recorded actual deposits, initialize a new reviewed `Config` with
+`FundingMode: "owner_receipts"` and the fixed USD 2,000 opening / USD 500 biweekly
+terms. Omission means legacy synthetic scheduled funding. This creation-time
+choice is immutable; an existing fixture cannot be converted by rerunning init.
+Receipt-mode runs never auto-credit missed deposits. Record each actual receipt
+through the authenticated, confirmed [owner controls](owner-book-controls.md).

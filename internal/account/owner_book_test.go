@@ -12,6 +12,7 @@ import (
 func TestOwnerBookRealDepositAndLegacyReplay(t *testing.T) {
 	opened := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
 	cfg := DefaultCappedConfig("owner-book", "owner-account", Cash, opened)
+	cfg.FundingMode = OwnerReceipts
 	state, err := NewCappedState(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +91,9 @@ func TestOwnerBookRealDepositAndLegacyReplay(t *testing.T) {
 		t.Fatal("same real receipt funded twice")
 	}
 	// Existing scheduled paper flows retain their original payload and semantics.
-	legacy, _ := NewCappedState(cfg)
+	legacyConfig := cfg
+	legacyConfig.FundingMode = ""
+	legacy, _ := NewCappedState(legacyConfig)
 	legacy, err = ApplyCappedCommand(legacy, due[0])
 	if err != nil {
 		t.Fatal(err)

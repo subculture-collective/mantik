@@ -262,6 +262,9 @@ cannot supply collection authority; see [forward assessments](docs/reference/for
 The [`book` terminal controls](docs/reference/owner-book-controls.md) show capped
 paper equity, sleeves, lifecycle and retained refusal reasons. The configured
 owner service session can confirm pause, permanent retirement, one real cash
-receipt or hard-halt clear with immutable action IDs and version fences. Missing
+receipt or hard-halt clear with immutable action IDs and version fences. Real
+receipts require a new immutable `owner_receipts` funding mode; legacy synthetic
+books cannot mix in real receipts, and receipt-mode workers never auto-credit
+missed schedule slots. Missing
 owner authentication refuses mutations even in development. The isolated
 walkthrough is automated evidence; the owner's terminal checkpoint is outstanding.

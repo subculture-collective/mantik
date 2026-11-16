@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -73,11 +74,25 @@ func validateOwnerEvent(cfg CappedConfig, c BookCommand, version int64) error {
 		return ErrBookConflict
 	}
 	if a.Action == "deposit" {
-		if cfg.OpeningCash != "2000" || cfg.DepositAmount != "500" || cfg.EveryWeeks != 2 || c.Kind != "deposit" || c.Amount != a.Amount || !c.EffectiveAt.Equal(a.EffectiveAt) || c.RiskControl != nil {
+		if cfg.FundingMode != OwnerReceipts || cfg.OpeningCash != "2000" || cfg.DepositAmount != "500" || cfg.EveryWeeks != 2 || c.Kind != "deposit" || c.Amount != a.Amount || !c.EffectiveAt.Equal(a.EffectiveAt) || c.RiskControl != nil {
 			return errors.New("real deposit differs from fixed book terms")
 		}
 	} else if c.Kind != "risk_control" || c.RiskControl == nil || *c.RiskControl != (risk.Control{Action: a.Action, StrategyID: a.StrategyID}) {
 		return errors.New("owner control differs from confirmation")
+	}
+	// Owner terms cannot attest a different event or hide executable sidecars.
+	// Clear alone may refresh complete valuation marks before resetting baseline.
+	expected := BookCommand{ID: c.ID, At: c.At, Kind: c.Kind, OwnerAction: a}
+	if a.Action == "deposit" {
+		expected.Amount, expected.EffectiveAt = a.Amount, a.EffectiveAt
+	} else {
+		expected.RiskControl = &risk.Control{Action: a.Action, StrategyID: a.StrategyID}
+		if a.Action == "owner_clear_halt" {
+			expected.Marks = c.Marks
+		}
+	}
+	if !reflect.DeepEqual(expected, c) {
+		return errors.New("owner event differs from confirmed payload")
 	}
 	return nil
 }

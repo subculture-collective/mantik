@@ -32,6 +32,7 @@ type CappedConfig struct {
 	OpenedAt                   time.Time
 	OpeningCash, DepositAmount string
 	EveryWeeks                 int
+	FundingMode                string `json:",omitempty"`
 }
 
 // BookOrder reserves a simple day limit order before any broker POST. Fee is
@@ -118,7 +119,22 @@ func bookRat(s string) (*big.Rat, error) {
 	}
 	return r, nil
 }
+
+// SyntheticSchedule is simulated scheduled funding. Empty legacy configs retain
+// this behavior and their original JSON bytes; do not normalize them on read.
+const SyntheticSchedule = "synthetic_schedule"
+
+// OwnerReceipts accepts only confirmed, owner-recorded cash receipts. It is an
+// immutable creation-time choice, never a relabelling of a synthetic book.
+const OwnerReceipts = "owner_receipts"
+
 func (c CappedConfig) validate() error {
+	if c.FundingMode != "" && c.FundingMode != SyntheticSchedule && c.FundingMode != OwnerReceipts {
+		return errors.New("invalid capped book funding mode")
+	}
+	if c.FundingMode == OwnerReceipts && (c.OpeningCash != "2000" || c.DepositAmount != "500" || c.EveryWeeks != 2) {
+		return errors.New("owner receipt book requires fixed 2000 opening cash and 500 biweekly terms")
+	}
 	a, e := bookRat(c.OpeningCash)
 	d, de := bookRat(c.DepositAmount)
 	if !bookID.MatchString(c.ID) || !bookID.MatchString(c.BrokerAccountID) || !c.Type.Valid() || c.Type == "" || c.OpenedAt.IsZero() || c.OpenedAt.Year() < 1900 || e != nil || de != nil || a.Sign() <= 0 || d.Sign() <= 0 || c.EveryWeeks < 1 || c.EveryWeeks > 52 {
@@ -324,6 +340,9 @@ func replay(s CappedState) (*bookReplay, error) {
 		r.funds.Advance(civil(c.At))
 		switch c.Kind {
 		case "deposit":
+			if s.Config.FundingMode == OwnerReceipts && c.OwnerAction == nil {
+				return nil, errors.New("owner receipt book refuses unconfirmed scheduled funding")
+			}
 			if c.OwnerAction != nil {
 				for _, prior := range financialEvents {
 					if prior.Kind == "deposit" && prior.OwnerAction != nil && prior.OwnerAction.Source == c.OwnerAction.Source {
@@ -614,6 +633,8 @@ func SnapshotCapped(s CappedState, prices map[string]string, at time.Time) (Capp
 }
 
 // DueDeposits uses the same Friday 06:00 Chicago schedule as daily replay.
+// These are schedule slots, not evidence of actual cash. In OwnerReceipts mode
+// each slot needs its own confirmed receipt before it can become a deposit.
 // The application event retains its effective time even when applied late.
 func (c CappedConfig) DueDeposits(through time.Time) ([]BookCommand, error) {
 	if e := c.validate(); e != nil {

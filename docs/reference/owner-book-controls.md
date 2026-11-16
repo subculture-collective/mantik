@@ -73,8 +73,28 @@ for that strategy version; it does not imply immediate liquidation.
 ## Real deposits
 
 A deposit records an actual owner-attested USD 500 cash receipt, not a transfer
-to a broker. The book must retain the fixed USD 2,000 opening, USD 500 every two
-weeks configuration. Use the due `deposit-YYYY-MM-DD` action ID of one Friday
+to a broker. Create a separate book with immutable `Config.FundingMode` set to
+`"owner_receipts"`, retaining the fixed USD 2,000 opening, USD 500 every two weeks
+configuration. Existing `incubation --action init --input` accepts this field in
+its reviewed `Config` manifest; `OpenedAt` records the actual opening clock. No
+new initialization command or model authority is introduced.
+
+Omitted funding mode and explicit `"synthetic_schedule"` retain automatic
+simulated funding for legacy fixtures. `DefaultCappedConfig` still omits the
+field and has exactly the old JSON bytes. A receipt-mode book never automatically
+credits elapsed schedule slots through `Fund`, `Rebalance` or `Submit`. Without
+a confirmed receipt, due slots add no cash. The ledger rejects unconfirmed
+scheduled deposits in receipt mode, and the owner deposit API rejects real
+receipts in synthetic mode. Funding mode cannot be changed by recreating a book,
+even before its first event. There is no automatic conversion or migration of
+legacy/mixed books; historical synthetic cash cannot become real cash by changing
+a label. A future conversion would need a separately reviewed, evidence-bound
+migration. Legacy reads and confirmed controls remain available.
+
+Use the actual receipt mode when initializing a book that will record real cash.
+A new mode does not independently verify the declared opening USD 2,000; that
+opening declaration must be backed by the owner's actual capital, never invented
+historical deposits. Use the due `deposit-YYYY-MM-DD` action ID of one Friday
 06:00 America/Chicago schedule slot. Supply `--amount 500`, `--effective-at` with
 the actual receipt RFC3339 clock and `--source` with a unique, non-secret receipt
 reference. The receipt must occur at or after that slot and no later than the
@@ -87,7 +107,8 @@ The existing opening configuration is not retroactively relabelled real funding.
 
 ## Safe terminal walkthrough and human checkpoint
 
-The following runnable walkthrough creates only an in-memory isolated test book,
+The following runnable walkthrough creates only an in-memory isolated test book
+with `FundingMode: "owner_receipts"`,
 uses a local fake owner credential and loopback service, and destroys it when the
 test exits. It does not read development databases, contact brokers/models or
 record a real cash receipt. Its receipt text is explicitly a fixture. It shows
@@ -123,7 +144,8 @@ that the owner has performed or accepted this checkpoint.
   invalid economic/strategy/valuation terms 422. Query parameters are refused.
 
 No schema migration is required: optional owner terms are retained in existing
-JSON journal payloads, omitted from legacy events. No hardcoded migration maximum
+JSON journal payloads, omitted from legacy events. The optional immutable funding
+mode is retained in the existing configuration JSON, omitted from legacy configs. No hardcoded migration maximum
 is introduced. Journal repair and qualification joins remain separate work;
 this adds no admission or safety-contract exemption. The coordinator must run
 combined verification after integrating those changes. No host/timer/runtime

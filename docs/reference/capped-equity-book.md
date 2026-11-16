@@ -34,9 +34,11 @@ reject/release its unbound reserve. If a durable submission intent already
 exists, abort refuses and the reserve remains. This also fences a delayed
 caller racing with recovery.
 
-`Fund` appends configured due flows by scheduled date. A restart/late invocation
-skips retained IDs. Each event retains both application and scheduled effective
-time. Paper funding never transfers funds into the venue.
+`Fund` appends configured simulated flows only for synthetic-schedule books. A
+restart/late invocation skips retained IDs. Owner-receipt books require an actual
+confirmed receipt for each slot and never receive automatic funding. Each event
+retains application and economic clocks. Paper funding never transfers funds
+into the venue.
 
 `Sync` reads journaled order states and raw fill activities. It imports only
 venue IDs bound to this book's client IDs, retains original activity hashes,
@@ -99,3 +101,20 @@ The book reports cash, settled cash, marked equity, owned positions and pending
 orders, its retained distribution and the persistent risk-brake view. It supports
 the opt-in [incubation runner](incubation.md), which retains decisions and both
 fill results in this journal. It does not establish protected real-quote positions.
+
+## Funding modes
+
+`CappedConfig.FundingMode` is immutable when a book is created. An omitted value
+or `"synthetic_schedule"` keeps legacy automatic simulated scheduled deposits.
+`"owner_receipts"` requires the fixed USD 2,000 opening / USD 500 biweekly terms
+and a confirmed owner receipt for each deposit. Schedule slots alone never add
+cash in this mode, including through client `Fund`, `Rebalance` and `Submit`.
+Actual receipt economic clocks and unique source references remain separate from
+the eligible schedule-slot IDs. See [owner book controls](owner-book-controls.md).
+
+The account ledger refuses unconfirmed receipt-mode deposits and mixed synthetic
+books with owner-attested real flows. Existing synthetic events replay with their
+original semantics and bytes. The default config JSON remains unchanged. No
+implicit conversion, historical funding fabrication or account-limit change is
+permitted by selecting a mode. A different funding mode requires a new book;
+there is no migration in this change.

@@ -63,8 +63,9 @@ func (c Client) append(ctx context.Context, cmd account.BookCommand) (account.Ca
 	return account.CappedState{}, account.ErrBookConflict
 }
 
-// Fund applies only configured due deposits, with scheduled IDs. Repeating a
-// later invocation skips existing flows without changing their original clocks.
+// Fund applies automatic schedule slots only to synthetic books. Owner-receipt
+// books require confirmed receipts and never acquire cash from elapsed time.
+// Repeating a legacy invocation retains the original scheduled-flow clocks.
 func (c Client) Fund(ctx context.Context, at time.Time) (account.CappedState, error) {
 	s, e := c.load(ctx)
 	if e != nil {
@@ -72,6 +73,13 @@ func (c Client) Fund(ctx context.Context, at time.Time) (account.CappedState, er
 	}
 	due, e := s.Config.DueDeposits(at)
 	if e != nil {
+		return s, e
+	}
+	if s.Config.FundingMode == account.OwnerReceipts {
+		// Validate retained receipts without requiring live valuation marks. This
+		// also refuses malformed or mixed journals instead of returning them as
+		// spendable funding. No broker/model request is involved.
+		_, e = account.PortfolioRoster(s)
 		return s, e
 	}
 	for _, d := range due {
@@ -155,7 +163,7 @@ func (c Client) submit(ctx context.Context, o account.BookOrder, marks map[strin
 	return response, err
 }
 
-// Rebalance retains sizing on current local equity after applying due deposits.
+// Rebalance retains sizing on current local equity after synthetic-only funding.
 // Lifecycle admissions come from stored gates; strategies provide weights only.
 // Qualified sleeves require the later forward-qualification owner (#92).
 func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, marks map[string]string) (allocation.Distribution, error) {

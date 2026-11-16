@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
+	"git.subcult.tv/subculture-collective/mantik/internal/cappedbook"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 )
@@ -42,6 +43,7 @@ func TestOwnerBookHTTPAuthenticationConfirmationAndRetries(t *testing.T) {
 	s := storage.NewMemory()
 	at := time.Date(2026, 11, 22, 15, 0, 0, 0, time.UTC)
 	cfg := account.DefaultCappedConfig("book", "account", account.Cash, at.AddDate(0, 0, -6))
+	cfg.FundingMode = account.OwnerReceipts
 	b, err := s.CreateCappedBook(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -219,5 +221,78 @@ func TestOwnerBookMissingValuationKeepsControlsVisibleAndRefusesClear(t *testing
 	after, _ := r.Store.CappedBook(ctx, r.BookID)
 	if after.Version != b.Version {
 		t.Fatal("refusal mutated book")
+	}
+}
+
+// Only identity is needed: Fund must never contact a broker.
+type ownerFundingIdentityOnlyBroker struct{ cappedbook.Broker }
+
+func (ownerFundingIdentityOnlyBroker) PaperAccountID() string { return "account" }
+
+func TestOwnerBookMissedFlowsAfterRealReceipt(t *testing.T) {
+	ctx := context.Background()
+	s := storage.NewMemory()
+	opened := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
+	cfg := account.DefaultCappedConfig("book", "account", account.Cash, opened)
+	cfg.FundingMode = account.OwnerReceipts
+	if _, err := s.CreateCappedBook(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	at := opened.AddDate(0, 0, 6)
+	due, _ := cfg.DueDeposits(at)
+	a := account.OwnerBookAction{ExpectedVersion: 0, Action: "deposit", Amount: "500", Source: "isolated-Nov20-receipt", EffectiveAt: due[0].EffectiveAt.Add(time.Hour)}
+	a.Confirmation = a.ConfirmationPin("book", due[0].ID)
+	if _, err := applyOwnerBookAction(ctx, s, "book", due[0].ID, a, at); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Date(2026, 12, 20, 15, 0, 0, 0, time.UTC)
+	client := cappedbook.Client{Store: s, Broker: ownerFundingIdentityOnlyBroker{}, BookID: "book"}
+	b, err := client.Fund(ctx, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := account.ReadOwnerBook(b, later)
+	if err != nil || v.Cash != "2500.000000000" || len(v.Deposits) != 1 || b.Version != 1 {
+		t.Fatal("Dec4/Dec18 funded without receipts", v, err)
+	}
+	if v.Deposits[0].ID != "deposit-2026-11-20" {
+		t.Fatal(v.Deposits)
+	}
+}
+
+func TestOwnerBookHTTPRealDepositRefusesSyntheticBooks(t *testing.T) {
+	for _, mode := range []string{"", account.SyntheticSchedule} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			ctx := context.Background()
+			s := storage.NewMemory()
+			opened := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
+			at := opened.AddDate(0, 0, 6)
+			cfg := account.DefaultCappedConfig("book", "account", account.Cash, opened)
+			cfg.FundingMode = mode
+			b, err := s.CreateCappedBook(ctx, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			due, _ := cfg.DueDeposits(at)
+			a := account.OwnerBookAction{ExpectedVersion: 0, Action: "deposit", Amount: "500", Source: "isolated-receipt", EffectiveAt: due[0].EffectiveAt.Add(time.Hour)}
+			a.Confirmation = a.ConfirmationPin("book", due[0].ID)
+			h := HandlerWithClock(s, "owner-token", newFakeClock(at))
+			if w := ownerBookCall(t, h, "POST", "/v1/capped-books/book/owner-controls/"+due[0].ID, "owner-token", a); w.Code != 422 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			current, _ := s.CappedBook(ctx, "book")
+			if current.Version != b.Version {
+				t.Fatal("rejected receipt changed legacy book")
+			}
+			// Legacy books still support authenticated controls and authoritative reads.
+			clear := account.OwnerBookAction{Action: "owner_clear_halt", ExpectedVersion: 0}
+			clear.Confirmation = clear.ConfirmationPin("book", "clear")
+			if w := ownerBookCall(t, h, "POST", "/v1/capped-books/book/owner-controls/clear", "owner-token", clear); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if w := ownerBookCall(t, h, "GET", "/v1/capped-books/book/owner-view", "owner-token", nil); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+		})
 	}
 }
