@@ -109,7 +109,7 @@ func incubationRequestFromJournal(ctx context.Context, in incubationInput, journ
 		if e != nil {
 			return req, e
 		}
-		req.Strategies = append(req.Strategies, service.IncubatingStrategy{SleeveID: entry.SleeveID, ForwardDeclarationID: entry.ForwardDeclarationID, GateID: entry.GateID, Risk: entry.Risk, Strategy: s, Source: incubationSource{entry}, Assets: entry.Assets})
+		req.Strategies = append(req.Strategies, service.IncubatingStrategy{SleeveID: entry.SleeveID, ForwardDeclarationID: entry.ForwardDeclarationID, GateID: entry.GateID, Risk: entry.Risk, Strategy: s, Source: incubationSource{Input: entry}, Assets: entry.Assets})
 	}
 	return req, nil
 }
