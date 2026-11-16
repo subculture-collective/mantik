@@ -66,6 +66,7 @@ type BookCommand struct {
 	Review                                  *StrategyReview    `json:",omitempty"`
 	ModelFill                               *IncubationFill    `json:",omitempty"`
 	RiskCheckpoint                          *RiskCheckpoint    `json:",omitempty"`
+	OwnerAction                             *OwnerBookAction   `json:",omitempty"`
 }
 
 // CappedState is a bounded replay projection of the immutable command history.
@@ -313,18 +314,30 @@ func replay(s CappedState) (*bookReplay, error) {
 		if c.ID == "" || len(c.ID) > 128 || ids[c.ID] || c.At.Before(last) || c.At.IsZero() {
 			return nil, ErrBookConflict
 		}
+		if c.OwnerAction != nil {
+			if e := validateOwnerEvent(s.Config, c, int64(len(ids))); e != nil {
+				return nil, e
+			}
+		}
 		ids[c.ID] = true
 		last = c.At
 		r.funds.Advance(civil(c.At))
 		switch c.Kind {
 		case "deposit":
+			if c.OwnerAction != nil {
+				for _, prior := range financialEvents {
+					if prior.Kind == "deposit" && prior.OwnerAction != nil && prior.OwnerAction.Source == c.OwnerAction.Source {
+						return nil, ErrBookConflict
+					}
+				}
+			}
 			due, e := s.Config.DueDeposits(c.At)
 			if e != nil {
 				return nil, e
 			}
 			match := false
 			for _, d := range due {
-				if d.ID == c.ID && d.Amount == c.Amount && d.EffectiveAt.Equal(c.EffectiveAt) {
+				if d.ID == c.ID && d.Amount == c.Amount && (d.EffectiveAt.Equal(c.EffectiveAt) || c.OwnerAction != nil && !c.EffectiveAt.Before(d.EffectiveAt) && !c.EffectiveAt.After(c.At)) {
 					match = true
 				}
 			}
