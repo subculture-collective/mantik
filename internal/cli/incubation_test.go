@@ -45,12 +45,12 @@ func TestIncubationInputPinsRecipeAndSource(t *testing.T) {
 func TestIncubationSourceCannotBackdateObservedBars(t *testing.T) {
 	at := time.Now().UTC()
 	b := storage.DailyBar{AssetID: "SPY", Symbol: "SPY", Date: at.AddDate(0, 0, -1).Format(time.DateOnly), Open: "100", High: "101", Low: "99", Close: "100", VWAP: "100", Volume: 1, PublishedAt: at.Add(-time.Hour), ObservedAt: at, AvailableAt: at.Add(-time.Second)}
-	src := incubationSource{incubationStrategyInput{Bars: map[string][]storage.DailyBar{"SPY": {b}}}}
+	src := incubationSource{Input: incubationStrategyInput{Bars: map[string][]storage.DailyBar{"SPY": {b}}}}
 	if _, e := src.AdjustedBars(context.Background(), "SPY", at); e == nil {
 		t.Fatal("backdated observed bar accepted")
 	}
 	b.AvailableAt = at
-	src.in.Bars["SPY"] = []storage.DailyBar{b}
+	src.Input.Bars["SPY"] = []storage.DailyBar{b}
 	if _, e := src.AdjustedBars(context.Background(), "SPY", at); e != nil {
 		t.Fatal(e)
 	}

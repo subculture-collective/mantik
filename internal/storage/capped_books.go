@@ -76,7 +76,11 @@ func (m *Memory) CappedBook(ctx context.Context, id string) (account.CappedState
 
 // ApplyCappedBook atomically validates and appends one event at an expected version.
 func (m *Memory) ApplyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
-	if c.Kind == "qualification" || c.Qualification != nil {
+	return m.applyCappedBook(ctx, id, version, c, false)
+}
+
+func (m *Memory) applyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand, collection bool) (account.CappedState, error) {
+	if c.Kind == "qualification" || c.Qualification != nil || !collection && (c.Kind == "qualification_plan" || c.Incubation != nil && c.Incubation.Qualification != nil) {
 		return account.CappedState{}, forward.ErrInvalid
 	}
 	if e := ctx.Err(); e != nil {
@@ -93,6 +97,15 @@ func (m *Memory) ApplyCappedBook(ctx context.Context, id string, version int64, 
 			return account.CappedState{}, account.ErrBookConflict
 		}
 		return copyCapped(s)
+	}
+	s, copyErr := copyCapped(s)
+	if copyErr != nil {
+		return account.CappedState{}, copyErr
+	}
+	if collection {
+		if e := m.validateCollectionLocked(ctx, s, &c); e != nil {
+			return s, e
+		}
 	}
 	next, e := account.ApplyCappedCommand(s, c)
 	if e != nil {
@@ -213,7 +226,11 @@ func (p *Postgres) CappedBook(ctx context.Context, id string) (account.CappedSta
 // ApplyCappedBook locks one book for a command, so independent workers cannot
 // reserve the same local capital. The existing adapter still fences the POST.
 func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
-	if c.Kind == "qualification" || c.Qualification != nil {
+	return p.applyCappedBook(ctx, id, version, c, false)
+}
+
+func (p *Postgres) applyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand, collection bool) (account.CappedState, error) {
+	if c.Kind == "qualification" || c.Qualification != nil || !collection && (c.Kind == "qualification_plan" || c.Incubation != nil && c.Incubation.Qualification != nil) {
 		return account.CappedState{}, forward.ErrInvalid
 	}
 	tx, e := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -243,6 +260,11 @@ func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64
 		}
 		return s, nil
 	}
+	if collection {
+		if e := p.validateCollectionTx(ctx, tx, s, &c); e != nil {
+			return s, e
+		}
+	}
 	next, e := account.ApplyCappedCommand(s, c)
 	if e != nil {
 		return account.CappedState{}, e
@@ -252,7 +274,7 @@ func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64
 			return account.CappedState{}, account.ErrBookConflict
 		}
 		command := next.Events[len(next.Events)-1]
-		if e = checkPortfolioAdmissionsTx(ctx, tx, s, command); e != nil {
+		if e = checkPortfolioAdmissionsTx(ctx, tx, s, command, p.qualificationEvaluator); e != nil {
 			return account.CappedState{}, e
 		}
 		record, err := newCappedHistory(s, next, command)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -149,4 +150,13 @@ func runIncubationSupervision(ctx context.Context, runner service.IncubationRunn
 		return err
 	}
 	return ctx.Err()
+}
+
+// The supervised path uses the same strict shape and full-input hash as run.
+func readIncubationCycle(path string) (service.IncubationRequest, error) {
+	var raw json.RawMessage
+	if err := readGateJSON(path, &raw, 32<<20); err != nil {
+		return service.IncubationRequest{}, err
+	}
+	return service.DecodeIncubationInput(raw)
 }

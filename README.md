@@ -253,3 +253,7 @@ manifest-verified 2016-to-date history.
 Canonical strategy forward windows use the separate [forward declaration contract](docs/reference/forward-declarations.md). It binds prospective clocks, its own benchmark, minimums and actual trial-family search bound to the capped-book runner, with multiweek holds and no qualification credit. Legacy threshold replay retains its original rules.
 
 Prospective strategy qualification uses [predeclared assessments](docs/reference/forward-assessments.md), distinct execution evidence, and automatic paper sleeve admission. Incubation and synthetic fixtures earn no qualification credit.
+
+Qualification collection is accepted only by the compiled durable collection
+path, which recomputes pinned inputs and decisions. Ordinary journal commands
+cannot supply collection authority; see [forward assessments](docs/reference/forward-assessments.md#durable-collection-authority).

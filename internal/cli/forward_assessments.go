@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
+	"git.subcult.tv/subculture-collective/mantik/internal/service"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 )
 
@@ -39,7 +40,7 @@ func runForwardAssessment(ctx context.Context, args []string, out, errOut io.Wri
 			return forward.ErrInvalid
 		}
 	}
-	s, e := storage.OpenPostgres(ctx, os.Getenv(*db))
+	s, e := storage.OpenPostgresWithQualificationEvaluator(ctx, os.Getenv(*db), service.EvaluateQualificationCollection)
 	if e != nil {
 		return e
 	}

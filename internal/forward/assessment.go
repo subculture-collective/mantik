@@ -13,6 +13,10 @@ import (
 
 const AssessmentPolicy = "prospective-purged-day-sign-v1"
 
+// PendingSearchTotal marks a storage-observed unavailable family count on a
+// protective collection. It is not a finite N and cannot earn assessment credit.
+const PendingSearchTotal int64 = -1
+
 // AssessmentPlan supplements v1 without rewriting its canonical bytes. All
 // selection, cost, benchmark and sample minima remain pinned by Declaration.
 type AssessmentPlan struct {
@@ -65,6 +69,9 @@ func (b BenchmarkObservation) Validate(at time.Time) error {
 // Collection identifies new execution under an already retained assessment
 // plan. Incubation plans cannot gain this field through an assessment or retry.
 type Collection struct {
+	// SearchTotal is stamped by the fenced collector, never accepted from an input manifest.
+	SearchTotal     *int64          `json:",omitempty"`
+	Input           json.RawMessage `json:",omitempty"`
 	PlanID          string
 	DecisionSources []json.RawMessage `json:",omitempty"`
 	Benchmark       BenchmarkObservation

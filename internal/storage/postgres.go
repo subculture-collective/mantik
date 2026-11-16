@@ -16,9 +16,10 @@ import (
 )
 
 type Postgres struct {
-	pool               *pgxpool.Pool
-	portfolioEvaluator PaperPortfolioEvaluator
-	executionQuotes    PaperExecutionQuoteSource
+	pool                   *pgxpool.Pool
+	qualificationEvaluator QualificationEvaluator
+	portfolioEvaluator     PaperPortfolioEvaluator
+	executionQuotes        PaperExecutionQuoteSource
 }
 
 func OpenPostgres(ctx context.Context, url string) (*Postgres, error) {

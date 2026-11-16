@@ -76,7 +76,7 @@ func (p *Postgres) CheckCappedSubmission(ctx context.Context, id string, o accou
 		return account.CappedState{}, err
 	}
 	if !o.ReduceOnly {
-		if err = checkPortfolioAdmissionsTx(ctx, tx, s, cmd); err != nil {
+		if err = checkPortfolioAdmissionsTx(ctx, tx, s, cmd, p.qualificationEvaluator); err != nil {
 			return account.CappedState{}, err
 		}
 	}

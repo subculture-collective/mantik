@@ -7,13 +7,10 @@ import (
 	"io"
 	"os"
 	"slices"
-	"time"
 
-	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
 	"git.subcult.tv/subculture-collective/mantik/internal/analyst"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
-	"git.subcult.tv/subculture-collective/mantik/internal/marketdata"
 	"git.subcult.tv/subculture-collective/mantik/internal/research"
 	"git.subcult.tv/subculture-collective/mantik/internal/service"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
@@ -23,59 +20,10 @@ import (
 	strategyspec "git.subcult.tv/subculture-collective/mantik/internal/strategy/spec"
 )
 
-// incubationInput is a reviewed, bounded input manifest, never generated model
-// authority. Bars/actions keep their original knowledge and observation clocks.
-type incubationInput struct {
-	Qualification        *forward.Collection `json:",omitempty"`
-	Config               *account.CappedConfig
-	Calendar             *service.IncubationCalendar `json:",omitempty"`
-	Protective           bool                        `json:",omitempty"`
-	ID                   string
-	DecidedAt, ExecuteAt time.Time
-	At                   time.Time
-	Quotes               map[string]account.IncubationQuote
-	Limits, Fees         map[string]string
-	Strategies           []incubationStrategyInput
-}
-type incubationStrategyInput struct {
-	AnalystCycleID         string `json:",omitempty"`
-	SleeveID, GateID, Risk string
-	ForwardDeclarationID   string `json:",omitempty"`
-	Library                *library.Config
-	Expression             *strategyspec.Definition
-	Assets                 []string
-	Bars                   map[string][]storage.DailyBar
-	Actions                map[string][]marketdata.CorporateAction
-	Universe               *marketdata.UniverseReport
-}
-type incubationSource struct{ in incubationStrategyInput }
+type incubationInput = service.IncubationInput
+type incubationStrategyInput = service.IncubationStrategyInput
+type incubationSource = service.IncubationSource
 
-func (s incubationSource) AdjustedBars(ctx context.Context, asset string, at time.Time) (marketdata.Series, error) {
-	if e := ctx.Err(); e != nil {
-		return marketdata.Series{}, e
-	}
-	bars, ok := s.in.Bars[asset]
-	if !ok {
-		return marketdata.Series{}, errors.New("retained bars missing")
-	}
-	// Never relabel a current fetch as historical knowledge, including a raw bar
-	// whose AvailableAt was backdated relative to observation/publication.
-	for _, b := range bars {
-		if b.AvailableAt.IsZero() || b.ObservedAt.IsZero() || b.PublishedAt.IsZero() || b.AvailableAt.Before(b.ObservedAt) || b.AvailableAt.Before(b.PublishedAt) || b.AvailableAt.After(at) || b.Symbol != asset || b.AssetID != asset {
-			return marketdata.Series{}, errors.New("incubation bars require original as-of clocks and symbol binding")
-		}
-	}
-	return marketdata.Adjust(asset, bars, s.in.Actions[asset], at)
-}
-func (s incubationSource) StockUniverse(ctx context.Context, at time.Time) (marketdata.UniverseReport, error) {
-	if e := ctx.Err(); e != nil {
-		return marketdata.UniverseReport{}, e
-	}
-	if s.in.Universe == nil || !s.in.Universe.AsOf.Equal(at) {
-		return marketdata.UniverseReport{}, errors.New("reviewed point-in-time universe required")
-	}
-	return *s.in.Universe, nil
-}
 func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
 	return incubationRequestFromJournal(context.Background(), in, nil, nil)
 }
@@ -88,6 +36,9 @@ func incubationHasAnalyst(in incubationInput) bool {
 	return false
 }
 func incubationRequestFromJournal(ctx context.Context, in incubationInput, journal analyst.EvidenceReader, fs forward.Store) (service.IncubationRequest, error) {
+	if in.Qualification != nil {
+		return service.IncubationRequestFromInput(in)
+	}
 	hash, e := service.IncubationInputHash(in)
 	if e != nil {
 		return service.IncubationRequest{}, e
@@ -200,7 +151,7 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 			return e
 		}
 	}
-	s, e := storage.OpenPostgres(ctx, os.Getenv(*db))
+	s, e := storage.OpenPostgresWithQualificationEvaluator(ctx, os.Getenv(*db), service.EvaluateQualificationCollection)
 	if e != nil {
 		return e
 	}

@@ -14,6 +14,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/executioncost"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/internal/workerplan"
 	"git.subcult.tv/subculture-collective/mantik/migrations"
@@ -22,6 +23,7 @@ import (
 type forwardAssessmentBackend interface {
 	forwardBackend
 	forward.AssessmentStore
+	QualificationCollector
 }
 
 func benchmarkFixture(t *testing.T, d forward.Declaration, at time.Time) forward.BenchmarkObservation {
@@ -41,6 +43,7 @@ func benchmarkFixture(t *testing.T, d forward.Declaration, at time.Time) forward
 func assessmentFixture(t *testing.T, s forwardAssessmentBackend, days int) (forward.Declaration, forward.AssessmentPlanRecord, account.CappedState) {
 	t.Helper()
 	ctx := context.Background()
+	installAssessmentFixtureEvaluator(s)
 	d, at := forwardFixture(t, s)
 	d.MaxHoldingSeconds = 60
 	d.MinSessions = days
@@ -74,7 +77,11 @@ func assessmentFixture(t *testing.T, s forwardAssessmentBackend, days int) (forw
 	apply := func(c account.BookCommand) {
 		t.Helper()
 		var e error
-		b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		if c.Kind == "qualification_plan" {
+			b, e = s.CollectQualification(ctx, d.BookID, b.Version, c)
+		} else {
+			b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		}
 		if e != nil {
 			t.Fatalf("%s: %v", c.ID, e)
 		}
@@ -187,6 +194,7 @@ func TestPostgresContractsForwardAssessments(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer reopened.Close()
+	installAssessmentFixtureEvaluator(reopened)
 	after, e := reopened.ForwardAssessmentPlan(ctx, "assessment-one")
 	if e != nil || !reflect.DeepEqual(before, after) {
 		t.Fatal("restart changed plan", e)
@@ -252,7 +260,11 @@ func qualificationDemotionContract(t *testing.T, s forwardAssessmentBackend) {
 	apply := func(c account.BookCommand) {
 		t.Helper()
 		var e error
-		b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		if c.Kind == "qualification_plan" {
+			b, e = s.CollectQualification(ctx, d.BookID, b.Version, c)
+		} else {
+			b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		}
 		if e != nil {
 			t.Fatalf("%s: %v", c.ID, e)
 		}
@@ -435,6 +447,7 @@ func TestMemoryForwardAssessmentPendingOrder(t *testing.T) {
 	plan.DecidedAt = d.WindowEnd.Add(-time.Hour)
 	plan.Rebalance.At = plan.DecidedAt.Add(time.Second)
 	plan.Rebalance.ID = "pending-window-allocation"
+	plan.Qualification.SearchTotal = nil
 	plan.Qualification.Benchmark = benchmarkFixture(t, d, plan.Rebalance.At)
 	q := plan.Quotes["SPY"]
 	q.OccurredAt = plan.Rebalance.At
@@ -443,7 +456,11 @@ func TestMemoryForwardAssessmentPendingOrder(t *testing.T) {
 	apply := func(c account.BookCommand) {
 		t.Helper()
 		var e error
-		b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		if c.Kind == "qualification_plan" {
+			b, e = s.CollectQualification(ctx, d.BookID, b.Version, c)
+		} else {
+			b, e = s.ApplyCappedBook(ctx, d.BookID, b.Version, c)
+		}
 		if e != nil {
 			t.Fatal(c.ID, e)
 		}
@@ -480,4 +497,144 @@ func TestForwardAssessmentObservesRecoveredDrawdown(t *testing.T) {
 	if result.Status != "failed" || result.Reason != "declared_drawdown_exceeded" || result.QualificationCredit || result.Sessions != 6 {
 		t.Fatal(result.Status, result.Reason, result.MaximumDrawdown)
 	}
+}
+
+// Synthetic statistics/journal tests deliberately install their own evaluator.
+// Production uses service.EvaluateQualificationCollection, tested separately.
+func installAssessmentFixtureEvaluator(s forwardAssessmentBackend) {
+	eval := func(_ context.Context, _ account.CappedState, c account.BookCommand, _ forward.Record, _ strategygate.Record, _ int64) error {
+		if len(c.Incubation.Qualification.DecisionSources) != 1 || string(c.Incubation.Qualification.DecisionSources[0]) != `{"contract_fixture":true}` {
+			return forward.ErrInvalid
+		}
+		return nil
+	}
+	switch v := s.(type) {
+	case *Memory:
+		v.qualificationEvaluator = eval
+	case *Postgres:
+		v.qualificationEvaluator = eval
+	}
+}
+
+// Adapted from the independent review reproduction: rejection is now required
+// at the ordinary write, before assessment or operational allocation exists.
+func TestReview92RejectForgedCollection(t *testing.T) {
+	var backend forwardAssessmentBackend = NewMemory()
+	if strings.Contains(t.Name(), "Postgres") {
+		backend = timerPostgres(t, "forged_collection")
+	}
+	d, _, b := assessmentFixture(t, backend, 6)
+	c := clone(b.Events[0])
+	c.ID = "forged-collection"
+	c.Incubation.Qualification.DecisionSources = []json.RawMessage{json.RawMessage(`null`)}
+	if _, e := backend.ApplyCappedBook(context.Background(), d.BookID, b.Version, c); e == nil {
+		t.Fatal("ordinary caller manufactured collection authority")
+	}
+	if _, e := backend.CollectQualification(context.Background(), d.BookID, b.Version, c); e == nil {
+		t.Fatal("null source passed installed evaluator")
+	}
+	after, e := backend.CappedBook(context.Background(), d.BookID)
+	if e != nil || !reflect.DeepEqual(b, after) {
+		t.Fatal("forgery changed journal", e)
+	}
+}
+func TestReview92RejectForgedCollectionPostgres(t *testing.T) { TestReview92RejectForgedCollection(t) }
+
+// Reproduce history that the old public writer could retain. This helper is
+// test-only: it bypasses the corrected durable collection boundary, while still
+// using the original account reducer and append-only PostgreSQL journal.
+type legacyCollectionWriter struct{ forwardAssessmentBackend }
+
+func (s legacyCollectionWriter) CollectQualification(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
+	c.Incubation.Qualification.DecisionSources = []json.RawMessage{json.RawMessage(`null`)}
+	b, e := s.CappedBook(ctx, id)
+	if e != nil {
+		return b, e
+	}
+	next, e := account.ApplyCappedCommand(b, c)
+	if e != nil {
+		return b, e
+	}
+	switch v := s.forwardAssessmentBackend.(type) {
+	case *Memory:
+		v.mu.Lock()
+		v.cappedBooks[id] = next
+		v.mu.Unlock()
+	case *Postgres:
+		raw, e := json.Marshal(next.Events[len(next.Events)-1])
+		if e != nil {
+			return b, e
+		}
+		if _, e = v.pool.Exec(ctx, "INSERT INTO mantik_capped_book_events(book_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)", id, next.Version, c.ID, string(raw)); e != nil {
+			return b, e
+		}
+	}
+	return next, nil
+}
+func TestForwardAssessmentRejectsLegacyForgedSources(t *testing.T) {
+	var s forwardAssessmentBackend = NewMemory()
+	if strings.Contains(t.Name(), "Postgres") {
+		s = timerPostgres(t, "legacy_forged_sources")
+	}
+	installAssessmentFixtureEvaluator(s)
+	d, p, b := assessmentFixture(t, legacyCollectionWriter{s}, 6)
+	forwardTrial(t, s, d, "one-search")
+	if _, e := s.AssessForward(context.Background(), p.Plan.ID, func() time.Time { return d.OutcomeDeadline }); e == nil {
+		t.Fatal("retained null source gained assessment credit")
+	}
+	after, e := s.CappedBook(context.Background(), d.BookID)
+	if e != nil || !reflect.DeepEqual(after, b) {
+		t.Fatal("rejected legacy assessment mutated book", e)
+	}
+	// Also reproduce a promotion already issued by the old evaluator. Its valid
+	// hashes cannot authorize allocation through the corrected admission boundary.
+	var w forward.Record
+	var starts []strategytrial.Start
+	switch v := s.(type) {
+	case *Memory:
+		w = v.forwardDeclarations[d.ID]
+		starts = sortedStarts(v.strategyTrials, d.Family)
+	case *Postgres:
+		w, e = loadForward(context.Background(), v.pool, d.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		starts, e = loadQualificationStarts(context.Background(), v.pool, d.Family)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	a := evaluateForward(p, w, b, starts, false, d.OutcomeDeadline)
+	if a.Status != "passed" {
+		t.Fatal("legacy reproduction failed", a.Reason)
+	}
+	command := account.BookCommand{ID: "qualification-" + a.PlanID, Kind: "qualification", At: a.At, Qualification: &a}
+	promoted, e := account.ApplyCappedCommand(b, command)
+	if e != nil {
+		t.Fatal(e)
+	}
+	switch v := s.(type) {
+	case *Memory:
+		v.cappedBooks[d.BookID] = promoted
+	case *Postgres:
+		raw, e := json.Marshal(command)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = v.pool.Exec(context.Background(), "INSERT INTO mantik_capped_book_events(book_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)", d.BookID, promoted.Version, command.ID, string(raw)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	roster, e := account.PortfolioRoster(promoted)
+	if e != nil {
+		t.Fatal(e)
+	}
+	req := allocation.RebalanceRequest{ID: "legacy-forged-allocation", At: d.OutcomeDeadline.Add(time.Second), Sleeves: []allocation.Sleeve{roster[d.SleeveID]}, Targets: []allocation.SleeveTarget{{SleeveID: d.SleeveID, Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}}}, Limits: map[string]string{"SPY": "101"}, Fees: map[string]string{"SPY": "1"}}
+	if _, e = s.ApplyCappedBook(context.Background(), d.BookID, promoted.Version, account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: map[string]string{"SPY": "100"}}); e == nil {
+		t.Fatal("old null-source promotion authorized allocation")
+	}
+}
+
+func TestPostgresContractsForwardAssessmentRejectsLegacyForgedSources(t *testing.T) {
+	TestForwardAssessmentRejectsLegacyForgedSources(t)
 }

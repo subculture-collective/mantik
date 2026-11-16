@@ -149,3 +149,55 @@ this change does not add a reset or transfer operation. General multi-leg qualif
 execution/evidence path is separate (#85). Benchmark source acquisition and
 truthfulness are upstream collector responsibilities. Natural elapsed time,
 real quote/venue behavior, and real qualification remain untested by fixtures.
+
+## Durable collection authority
+
+Ordinary `ApplyCappedBook` commands cannot append `qualification_plan` or carry
+collection evidence, including under another command kind. Collection uses
+`CollectQualification` on a store constructed with the compiled service evaluator.
+A default store has no collection authority. The evaluator is a process dependency;
+commands cannot supply an evaluator or an approval flag.
+
+The supervised and one-shot CLI share the same strict input schema, compilation,
+and full-input hash. Collection retains that original input manifest, then
+recompiles its library or expression configuration under the book/family fence.
+The compiled identity must match the gate and forward declaration. The evaluator
+rebuilds the view from the original clock-validated bars, actions and universe,
+reconstructs the sleeve's book from the journal prefix, and recomputes the decision.
+It compares targets, state and retained view bytes. Storage stamps the collection-time
+search count so later starts cannot change replayed decisions; assessment statistics
+still use the current actual search ledger. A storage-observed pending family may
+retain a protective flat control with `PendingSearchTotal` (`-1`), which explicitly
+means unavailable rather than a finite N. It cannot earn assessment credit. New
+entry still requires a reconciled family count. Flat collection exits also retain
+the exact gate-declared fill costs; their entry-admission exception does not waive
+cost validation. Code-control outcomes are
+recomputed from the window and retained owner controls. Neither a self-consistent
+hash nor a caller-written source/control record proves collection authority.
+
+Retained views include the actual `View.Universe()` consumed by the strategy and
+the original `UniverseReport`: membership, screening configuration, reference
+observation clock, as-of clock and source limitation flags. The view owns a copy
+and its report accessor returns a copy. Different consumed memberships therefore
+produce different evidence bytes even when all bar bytes match.
+
+Assessment repeats compiled validation against each collection's original journal
+prefix before it can publish or return a retained qualification. Old null sources
+or missing compiled manifests fail closed; this change does not rewrite historical
+rows or grant them new credit. Qualified allocation and final submission also
+recompute the retained grant and its collection evidence, rejecting a promotion
+issued from invalid old evidence. No additional migration beyond 126 is required.
+The callback performs no storage/provider reads under the fence. PostgreSQL takes
+the book row before the family lock, including for flat collection decisions.
+
+A collection for the current allocation may follow reconciliation. Promotion
+changes the roster and invalidates that receipt. Qualified submission uses the
+current fenced qualification and family count. After promotion, the safety worker
+uses owner controls and ongoing risk/holding checks; the completed qualification
+window does not prohibit post-window qualified operation. Demotion withdraws the
+grant, and assessment retries cannot restore it or clear an owner pause.
+
+These are synthetic contract tests. A natural observation window, including #108,
+has not been performed. Collection still does not prove profitability or broader
+release qualification. Option/model-dependent collection and recipe work remain
+separate from this stock compiled path.

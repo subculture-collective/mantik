@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -50,9 +52,10 @@ type IncubatingStrategy struct {
 // the owner's complete input (recipes and retained source manifest included).
 // Retrying an ID recovers the recorded decisions without invoking strategies.
 type IncubationRequest struct {
-	ID, InputSHA256 string
-	Qualification   *forward.Collection
-	Calendar        *IncubationCalendar
+	QualificationInput json.RawMessage
+	ID, InputSHA256    string
+	Qualification      *forward.Collection
+	Calendar           *IncubationCalendar
 	// Protective flattens only retained owners, without invoking strategy code.
 	Protective           bool
 	DecidedAt, ExecuteAt time.Time
@@ -131,7 +134,7 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			if event.Kind != kind || event.Incubation == nil || event.Incubation.InputSHA256 != req.InputSHA256 || !event.Incubation.DecidedAt.Equal(req.DecidedAt) || !event.At.Equal(req.ExecuteAt) || !reflect.DeepEqual(event.Incubation.Quotes, req.Quotes) || !reflect.DeepEqual(event.Incubation.Rebalance.Limits, req.Limits) || !reflect.DeepEqual(event.Incubation.Rebalance.Fees, req.Fees) {
 				return out, account.ErrBookConflict
 			}
-			if req.Qualification != nil && (event.Incubation.Qualification == nil || event.Incubation.Qualification.PlanID != req.Qualification.PlanID || !reflect.DeepEqual(event.Incubation.Qualification.Benchmark, req.Qualification.Benchmark)) {
+			if req.Qualification != nil && (event.Incubation.Qualification == nil || !bytes.Equal(event.Incubation.Qualification.Input, req.QualificationInput) || event.Incubation.Qualification.PlanID != req.Qualification.PlanID || !reflect.DeepEqual(event.Incubation.Qualification.Benchmark, req.Qualification.Benchmark)) {
 				return out, account.ErrBookConflict
 			}
 			plan = event.Incubation
@@ -368,6 +371,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				p.Rebalance.Targets = append(p.Rebalance.Targets, allocation.SleeveTarget{SleeveID: s.SleeveID, Decision: target})
 				p.Decisions = append(p.Decisions, account.IncubationDecision{SleeveID: s.SleeveID, StrategyID: g.Decision.StrategyID, State: d.State})
 			}
+			if p.Qualification != nil {
+				q := *p.Qualification
+				q.Input = slices.Clone(req.QualificationInput)
+				p.Qualification = &q
+			}
 			if err := retainQualificationViews(&p, views); err != nil {
 				return out, err
 			}
@@ -377,7 +385,16 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			out.Admission = health
 			// Due flows precede the plan; the decision must not see execution-time flows.
 			// Fund's receipt clock is execution time, so record the plan first.
-			state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: req.ID, Kind: kind, At: req.ExecuteAt, Incubation: &p})
+			command := account.BookCommand{ID: req.ID, Kind: kind, At: req.ExecuteAt, Incubation: &p}
+			if req.Qualification != nil {
+				collector, ok := r.Store.(storage.QualificationCollector)
+				if !ok {
+					return out, forward.ErrInvalid
+				}
+				state, e = collector.CollectQualification(ctx, r.BookID, state.Version, command)
+			} else {
+				state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, command)
+			}
 			if e != nil {
 				return out, e
 			}

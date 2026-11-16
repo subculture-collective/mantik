@@ -79,6 +79,7 @@ type Memory struct {
 	feedArchiveRecords          map[string]feedArchiveSourceRef
 	feedArchivePrefixPoints     map[string]feedArchivePrefixRef
 	feedArchivePrefixOrder      map[string][]feedArchivePrefixRef
+	qualificationEvaluator      QualificationEvaluator
 	portfolioEvaluator          PaperPortfolioEvaluator
 	executionQuotes             PaperExecutionQuoteSource
 	corporateActionSources      []CorporateActionSourceRecord

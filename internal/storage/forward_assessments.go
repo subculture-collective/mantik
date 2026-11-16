@@ -9,6 +9,7 @@ import (
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/internal/workerplan"
 	"github.com/jackc/pgx/v5"
@@ -130,6 +131,9 @@ func (m *Memory) AssessForward(ctx context.Context, id string, now func() time.T
 		return forward.Assessment{}, e
 	}
 	b := m.cappedBooks[w.Declaration.BookID]
+	if e := validateAssessmentCollections(ctx, b, id, m.qualificationEvaluator, w, m.strategyGates[w.Declaration.GateID], int64(len(sortedStarts(m.strategyTrials, w.Declaration.Family)))); e != nil {
+		return forward.Assessment{}, e
+	}
 	if old, ok := assessmentRetry(b, id); ok {
 		return clone(old), nil
 	}
@@ -245,9 +249,7 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 	if e != nil {
 		return forward.Assessment{}, e
 	}
-	if old, ok := assessmentRetry(b, id); ok {
-		return old, tx.Commit(ctx)
-	}
+
 	starts := []strategytrial.Start{}
 	rows, e := tx.Query(ctx, "SELECT payload FROM mantik_strategy_trials WHERE family=$1 ORDER BY id", w.Declaration.Family)
 	if e != nil {
@@ -274,6 +276,16 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 	if familyErr != nil && !errors.Is(familyErr, strategytrial.ErrFamilyPending) {
 		return forward.Assessment{}, familyErr
 	}
+	g, e := loadGate(ctx, tx, w.Declaration.GateID)
+	if e != nil {
+		return forward.Assessment{}, e
+	}
+	if e = validateAssessmentCollections(ctx, b, id, p.qualificationEvaluator, w, g, int64(len(starts))); e != nil {
+		return forward.Assessment{}, e
+	}
+	if old, ok := assessmentRetry(b, id); ok {
+		return old, tx.Commit(ctx)
+	}
 	pending := familyErr != nil
 	var at time.Time
 	if now != nil {
@@ -298,4 +310,22 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 		return a, e
 	}
 	return a, tx.Commit(ctx)
+}
+
+func validateAssessmentCollections(ctx context.Context, b account.CappedState, id string, eval QualificationEvaluator, w forward.Record, g strategygate.Record, n int64) error {
+	for i, c := range b.Events {
+		if c.Incubation == nil || c.Incubation.Qualification == nil || c.Incubation.Qualification.PlanID != id {
+			continue
+		}
+		if c.Kind != "qualification_plan" || eval == nil || c.Incubation.Qualification.SearchTotal == nil || *c.Incubation.Qualification.SearchTotal < w.SearchTotal || *c.Incubation.Qualification.SearchTotal > n {
+			return forward.ErrInvalid
+		}
+		prefix := b
+		prefix.Events = b.Events[:i]
+		prefix.Version = int64(i)
+		if e := eval(ctx, clone(prefix), clone(c), clone(w), clone(g), *c.Incubation.Qualification.SearchTotal); e != nil {
+			return e
+		}
+	}
+	return nil
 }

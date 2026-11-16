@@ -10,6 +10,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/executioncost"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -128,7 +129,7 @@ func checkPortfolioAdmissions(s account.CappedState, c account.BookCommand, read
 }
 
 func (m *Memory) checkPortfolioAdmissionsLocked(s account.CappedState, c account.BookCommand) error {
-	return checkPortfolioAdmissions(s, c, func(id string) (strategygate.Record, error) {
+	e := checkPortfolioAdmissions(s, c, func(id string) (strategygate.Record, error) {
 		g, ok := m.strategyGates[id]
 		if !ok {
 			return g, strategygate.ErrNotFound
@@ -149,6 +150,18 @@ func (m *Memory) checkPortfolioAdmissionsLocked(s account.CappedState, c account
 		}
 		return r, validateAssessmentPlan(r, m.forwardDeclarations[r.Plan.DeclarationID])
 	})
+	if e != nil {
+		return e
+	}
+	return validateQualifiedAdmissions(context.Background(), s, c, m.qualificationEvaluator, func(id string) (forward.AssessmentPlanRecord, forward.Record, strategygate.Record, []strategytrial.Start, error) {
+		p, ok := m.forwardAssessmentPlans[id]
+		if !ok {
+			return p, forward.Record{}, strategygate.Record{}, nil, forward.ErrNotFound
+		}
+		w := m.forwardDeclarations[p.Plan.DeclarationID]
+		g := m.strategyGates[w.Declaration.GateID]
+		return p, w, g, sortedStarts(m.strategyTrials, w.Declaration.Family), nil
+	})
 }
 
 func lockStrategyFamily(ctx context.Context, tx pgx.Tx, family string) error {
@@ -156,7 +169,7 @@ func lockStrategyFamily(ctx context.Context, tx pgx.Tx, family string) error {
 	return e
 }
 
-func checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.CappedState, c account.BookCommand) error {
+func checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.CappedState, c account.BookCommand, eval QualificationEvaluator) error {
 	// All portfolio writers take the book row first, then sorted family locks.
 	// Trial starts take a family lock only, so no inverse book/family order exists.
 	needed, e := neededAdmissions(s, c)
@@ -178,9 +191,28 @@ func checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.Capped
 			return e
 		}
 	}
-	return checkPortfolioAdmissions(s, c, func(id string) (strategygate.Record, error) { return loadGate(ctx, tx, id) }, func(family string) (int64, error) {
+	e = checkPortfolioAdmissions(s, c, func(id string) (strategygate.Record, error) { return loadGate(ctx, tx, id) }, func(family string) (int64, error) {
 		return strategySearchTotal(ctx, tx, family)
 	}, func(id string) (forward.Record, error) { return loadForward(ctx, tx, id) }, func(id string) (forward.AssessmentPlanRecord, error) { return loadAssessmentPlan(ctx, tx, id) })
+	if e != nil {
+		return e
+	}
+	return validateQualifiedAdmissions(ctx, s, c, eval, func(id string) (forward.AssessmentPlanRecord, forward.Record, strategygate.Record, []strategytrial.Start, error) {
+		p, e := loadAssessmentPlan(ctx, tx, id)
+		if e != nil {
+			return p, forward.Record{}, strategygate.Record{}, nil, e
+		}
+		w, e := loadForward(ctx, tx, p.Plan.DeclarationID)
+		if e != nil {
+			return p, w, strategygate.Record{}, nil, e
+		}
+		g, e := loadGate(ctx, tx, w.Declaration.GateID)
+		if e != nil {
+			return p, w, g, nil, e
+		}
+		starts, e := loadQualificationStarts(ctx, tx, w.Declaration.Family)
+		return p, w, g, starts, e
+	})
 }
 
 func checkQualificationCollection(s account.CappedState, c account.BookCommand, read func(string) (forward.Record, error), readPlan func(string) (forward.AssessmentPlanRecord, error)) error {
