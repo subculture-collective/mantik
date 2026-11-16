@@ -283,6 +283,25 @@ func buildStrategyReview(s CappedState, in ReviewInput, r *bookReplay) (Strategy
 	if applied.Sign() > 0 && scale.Cmp(applied) < 0 {
 		budget.Mul(budget, new(big.Rat).Quo(scale, applied))
 	}
+	// A plan decided before a review may size later with more capital. That
+	// distribution cannot loosen an outstanding ceiling without a grow review.
+	for i := len(s.Events) - 1; i >= 0; i-- {
+		prior := s.Events[i].Review
+		if prior == nil || prior.SleeveID != out.SleeveID {
+			continue
+		}
+		if prior.BudgetCeiling != "" {
+			ceiling, _ := allocationAmount(prior.BudgetCeiling)
+			priorScale, _ := allocationAmount(prior.Scale)
+			if priorScale.Sign() > 0 && scale.Cmp(priorScale) < 0 {
+				ceiling.Mul(ceiling, new(big.Rat).Quo(scale, priorScale))
+			}
+			if ceiling.Cmp(budget) < 0 {
+				budget = ceiling
+			}
+		}
+		break
+	}
 	out.BudgetCeiling = budget.FloatString(9)
 	return out, nil
 }
@@ -544,6 +563,17 @@ func reviewSizing(s CappedState, c BookCommand, r *bookReplay) (allocation.Rebal
 			}
 		}
 	}
+	// A retained review declaration enables this policy for its sleeve. Legacy
+	// journals have no declaration and must keep their original pause sizing.
+	managed := map[string]bool{}
+	for _, e := range s.Events {
+		if e.ID == c.ID {
+			break
+		}
+		if e.Kind == "review_declare" && e.ReviewDeclaration != nil {
+			managed[e.ReviewDeclaration.SleeveID] = true
+		}
+	}
 	for i, t := range req.Targets {
 		var sid string
 		for _, sleeve := range req.Sleeves {
@@ -557,7 +587,7 @@ func reviewSizing(s CappedState, c BookCommand, r *bookReplay) (allocation.Rebal
 		}
 		if snap.BudgetScales[t.SleeveID] == "0" {
 			req.Targets[i].Decision = allocation.TargetDecision{}
-		} else if r.risk.Breakers[sid] && !allocation.FlatTarget(t.Decision) {
+		} else if managed[t.SleeveID] && r.risk.Breakers[sid] && !allocation.FlatTarget(t.Decision) {
 			req.Targets[i].Decision = allocation.TargetDecision{HoldExposure: true}
 		}
 	}

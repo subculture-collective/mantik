@@ -108,7 +108,8 @@ transition from retained events.
 Hold, investigate and reduction events also retain an absolute dollar budget
 ceiling. Deposits, rising equity or pool redistribution cannot expand risk while
 comparison evidence is missing or insufficient; only a complete grow review can
-release that ceiling.
+release that ceiling. Each later non-grow review preserves or tightens the
+previous ceiling, even when an older decision sizes later with a larger budget.
 
 The distributor applies the scale and ceiling after the fixed pool and sleeve caps. Freed
 capacity stays cash: 5% aggregate incubation, 1% per model version, the 65%
@@ -120,12 +121,15 @@ sleeves cannot be omitted or reassigned. Existing gate freshness, forward
 eligibility, holding expiries and the retained-owner flat-exit exception remain
 in force.
 
-Owner pauses preserve held quantities for non-flat targets on subsequent sizing
-and block new risk at submission. Explicit protective flat targets, including
+For sleeves with a retained review declaration, owner pauses preserve held
+quantities for non-flat targets on subsequent sizing and block new risk at
+submission. The declaration is the compatibility boundary: older journals
+without it keep their original reduction targets and sizing hashes. Explicit protective flat targets, including
 forward holding-expiry exits, still execute. Owner retirement is a separate permanent risk state: resume,
 unkill and loss-baseline reset cannot clear it. Retirement committed after a
 review or after an order was retained still blocks new risk on the existing
-submission check. Protective reductions and reconciliation remain possible.
+submission check, repeated after adapter preparation at the actual pre-POST
+callback. Protective reductions and reconciliation remain possible.
 Review never clears an owner pause, kill, retirement, reduce-only or hard halt.
 An already pending opening order is not automatically cancelled by review;
 reconciliation must resolve it before retirement can flatten the final holding.

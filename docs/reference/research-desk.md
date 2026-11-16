@@ -298,3 +298,10 @@ The historical engine views therefore made zero decisions and zero fills.
 Those all-cash returns are tool/retention evidence, not historical performance,
 source approval, gate admission or qualification. Private source, trial and dump
 paths and hashes are supplied to the coordinator outside Git.
+
+Pending family accounting denies new incubation exposure at both admission and
+the adapter's final pre-POST callback. It does not supply a finite search count.
+Retained owners may still submit explicit flat exits. A bound forward sleeve
+conservatively flattens without evaluating the strategy while its family is
+pending, so an interrupted research call cannot strand an expired holding.
+Reconciliation and GET-only recovery do not need renewed family admission.

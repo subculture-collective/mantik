@@ -520,6 +520,7 @@ func TestStrategyReviewGrowthRestoresOnlyAdmittedCapacity(t *testing.T) {
 		next.Limits["SPY"] = "101"
 	}
 	r.now = func() time.Time { return next.ExecuteAt }
+	healthyIncubationWorkers(t, r, next.ExecuteAt)
 	result, e := r.Run(ctx, next)
 	if e != nil {
 		t.Fatal(result.Distribution, e)

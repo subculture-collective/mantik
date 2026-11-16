@@ -20,6 +20,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/internal/workhealth"
 )
 
@@ -205,12 +206,16 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 					return out, errors.New("incubation asset set differs from gate")
 				}
 				n, err := r.Store.StrategyTrialSearchTotal(ctx, g.Declaration.Family)
-				if err != nil {
+				pending := errors.Is(err, strategytrial.ErrFamilyPending)
+				if err != nil && !pending {
 					return out, err
 				}
-				if n != g.Decision.SearchTotal {
+				if pending || n != g.Decision.SearchTotal {
 					owner, retained := roster[s.SleeveID]
 					if !retained || owner.StrategyID != sid || owner.GateID != s.GateID {
+						if pending {
+							return out, err
+						}
 						return out, errors.New("gate_search_history_changed")
 					}
 					stale[i] = true
@@ -266,18 +271,25 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 						return out, forward.ErrConflict
 					}
 					n, e := r.Store.StrategyTrialSearchTotal(ctx, decl.Family)
-					if e != nil {
+					pending := errors.Is(e, strategytrial.ErrFamilyPending)
+					if e != nil && !pending {
 						return out, e
 					}
 					opened, e := account.ForwardHoldingOpened(state, s.SleeveID, req.DecidedAt)
 					if e != nil {
 						return out, e
 					}
-					a, b := record.Clocks(req.DecidedAt, n, opened), record.Clocks(req.ExecuteAt, n, opened)
-					if !a.EntryEligible || !b.EntryEligible || !opened.IsZero() && opened.Before(decl.WindowStart) {
-						controlled = true
-						d.State = book.State
-						holdExposure = a.OutcomeOpen && b.OutcomeOpen && !a.HoldExpired && !b.HoldExpired && !opened.IsZero() && !opened.Before(decl.WindowStart)
+					if pending {
+						// No finite search count exists. Conservatively flatten a bound
+						// retained owner, including an expired holding, without a model.
+						controlled, holdExposure, d.State = true, false, book.State
+					} else {
+						a, b := record.Clocks(req.DecidedAt, n, opened), record.Clocks(req.ExecuteAt, n, opened)
+						if !a.EntryEligible || !b.EntryEligible || !opened.IsZero() && opened.Before(decl.WindowStart) {
+							controlled = true
+							d.State = book.State
+							holdExposure = a.OutcomeOpen && b.OutcomeOpen && !a.HoldExpired && !b.HoldExpired && !opened.IsZero() && !opened.Before(decl.WindowStart)
+						}
 					}
 				}
 				if account.ReviewExitRequired(state, s.SleeveID, g.Decision.StrategyID, req.DecidedAt) {

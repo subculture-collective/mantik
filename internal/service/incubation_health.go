@@ -338,6 +338,29 @@ func (r IncubationRunner) checkHealthSubmission(ctx context.Context, o alpaca.St
 	if err = account.CheckPortfolioSubmission(state, *order, marks); err != nil {
 		return err
 	}
+	if !order.ReduceOnly {
+		// Reservations do not authorize a later POST after research changes.
+		// Reductions and GET-only recovery require no renewed family admission.
+		for _, sleeve := range plan.Rebalance.Sleeves {
+			if sleeve.ID != order.SleeveID {
+				continue
+			}
+			gate, e := r.Store.StrategyGate(ctx, sleeve.GateID)
+			if e != nil {
+				return e
+			}
+			if gate.Decision == nil || gate.Decision.StrategyID != order.StrategyID || !gate.Decision.AdmitsIncubation() {
+				return fmt.Errorf("incubation_gate_required")
+			}
+			n, e := r.Store.StrategyTrialSearchTotal(ctx, gate.Declaration.Family)
+			if e != nil {
+				return e
+			}
+			if n != gate.Decision.SearchTotal {
+				return fmt.Errorf("gate_search_history_changed")
+			}
+		}
+	}
 	at := r.clockNow()
 	if at.Before(plan.Rebalance.At) || at.Sub(plan.Rebalance.At) > time.Minute {
 		return fmt.Errorf("incubation quote expired before submission")
@@ -411,7 +434,7 @@ func reconciliationUnchanged(state account.CappedState, rec *incubationReconcili
 	}
 	for _, event := range state.Events[rec.version:] {
 		switch event.Kind {
-		case "risk_observe", "risk_control", "deposit":
+		case "risk_observe", "risk_control", "deposit", "review_declare", "strategy_review":
 		case "incubation_plan":
 			if event.Incubation == nil || event.Incubation.Rebalance.ID != allocationID {
 				return false

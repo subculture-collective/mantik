@@ -257,16 +257,21 @@ func TestForwardActualAdapterChecksWindowAfterPreparation(t *testing.T) {
 	r, req, strategy, _, record := forwardRunnerFixture(t)
 	req = nextForwardCycle(req, "forward-adapter-expiry", record.Declaration.WindowEnd.Add(-4*time.Second))
 	at := req.ExecuteAt
+	healthyIncubationWorkers(t, r, at)
 	r.now = func() time.Time { return at }
 	gets, posts := 0, 0
 	old := http.DefaultTransport
 	http.DefaultTransport = incubationTransport(func(h *http.Request) (*http.Response, error) {
 		if h.Method == http.MethodGet {
 			gets++
-			at = at.Add(2 * time.Second)
+			if h.URL.Path != "/v2/account/activities/FILL" {
+				at = at.Add(2 * time.Second)
+			}
 		}
 		raw := ""
 		switch h.URL.Path {
+		case "/v2/account/activities/FILL":
+			raw = `[]`
 		case "/v2/account":
 			raw = `{"id":"paper-fixture","status":"ACTIVE"}`
 		case "/v2/assets/SPY":
@@ -290,7 +295,7 @@ func TestForwardActualAdapterChecksWindowAfterPreparation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Run(context.Background(), req)
-	if err == nil || !strings.Contains(err.Error(), "forward eligibility expired before submission") || posts != 0 || gets != 2 || strategy.calls != 1 {
+	if err == nil || !strings.Contains(err.Error(), "forward eligibility expired before submission") || posts != 0 || gets != 4 || strategy.calls != 1 {
 		t.Fatal("preparatory requests extended the forward window", err, posts, gets, strategy.calls)
 	}
 	state, err := r.Store.CappedBook(context.Background(), r.BookID)
