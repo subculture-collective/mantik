@@ -77,7 +77,23 @@ func suppliedVariants(raw string) []json.RawMessage {
 		}
 		if token != json.Delim('[') {
 			out = append(out, json.RawMessage(`null`))
-			break
+			// A complete malformed value cannot hide later top-level proposals.
+			// Token has consumed primitives; consume a compound value as well.
+			if token == json.Delim('{') {
+				depth := 1
+				for depth > 0 {
+					next, err := d.Token()
+					if err != nil {
+						return out
+					}
+					if next == json.Delim('{') || next == json.Delim('[') {
+						depth++
+					} else if next == json.Delim('}') || next == json.Delim(']') {
+						depth--
+					}
+				}
+			}
+			continue
 		}
 		for d.More() {
 			offset := d.InputOffset()
@@ -241,7 +257,22 @@ func evolve(ctx context.Context, s Trials, d Declaration, r Request, raw string,
 		if ev.Rejection == "" && (selected < 0 || ev.Penalty < evidence[selected].Penalty) {
 			selected = i
 		}
-		req := Request{Tool: "run_backtest", Parents: v.Parents}
+		parents := v.Parents
+		if len(parents) > 2 {
+			parents = nil
+		}
+		for _, parent := range parents {
+			if _, err := parentDefinition(ctx, s, d, parent, at); err != nil {
+				if !errors.Is(err, ErrInvalid) {
+					return toolResult{}, false, err
+				}
+				// A rejected sibling cannot acquire a lineage link when this
+				// same reply is recovered after earlier starts were retained.
+				parents = nil
+				break
+			}
+		}
+		req := Request{Tool: "run_backtest", Parents: parents}
 		if problem == nil {
 			req.Spec = marshal(def)
 		}
