@@ -49,8 +49,9 @@ clock. Only completed prior-day bars are accepted. Input clocks more than ten
 minutes old are refused. The request hash binds the entire manifest, while the
 view hash binds the actual model input. A receipt records `InputAt` separately
 from `At`, the completion clock: model output cannot be consumed at the earlier
-input clock. A compiled receipt is valid only for its exact completion-time view
-over the unchanged frozen data.
+input clock. The ordinary strategy interface requires the exact completion
+clock. The incubation bridge consumes a receipt at or after completion for up to 60 seconds,
+using the unchanged frozen data. Expired receipts hold actual exposure.
 
 `EvidenceClass` and `SourceSHA256` stay attached to the result and receipt.
 Synthetic fixtures remain `synthetic_fixture`; runtime market observations remain
@@ -67,8 +68,28 @@ tries to propose a strategy is rejected, never dispatched or evaluated.
 
 ## Budget, custody and recovery
 
-The runner reads the authoritative capped book and uses the existing distributor
-with exposure holds to preview its budget. The fixed incubation pool remains 5%
+The runner keeps model features frozen at `AsOf` while reading the current capped
+book before each call and before the final target. A newer healthy safety receipt
+can advance the book without invalidating those features. Forward holding clocks,
+owner controls, family accounting and equity use the current clock; book receipts
+from the future still refuse admission.
+
+`account.CurrentPortfolioMarks` obtains valuation marks from the trusted local
+book journal, independently of the model universe. Every filled holding and
+pending order needs a positive mark retained within the last 60 seconds. Missing
+or stale marks make admission explicitly unavailable. The runner never guesses a
+zero value, uses model bars as portfolio prices, or adds held symbols to model
+inputs. The independent collector/safety path must keep complete book marks fresh.
+
+`account.PreviewPortfolioBudgets` reads filled sleeve holdings, pending opening
+commitments, pending fees and adverse price gaps. Pending reductions do not free
+capacity until filled. It applies current review scales and absolute ceilings,
+including reviews already retained at the preview clock. Nominal budget for an
+unused sleeve cannot ignore another owner's existing commitments. If remaining
+pool capacity cannot support the nominal fixed target, the preview waits rather
+than assuming another owner will resize or release pending work. This read-only
+helper leaves historical distribution inputs and hashes unchanged. The fixed
+incubation pool remains 5%
 of local equity, shared among incubating owners, with at most 1% per model version.
 Existing oversight reductions and ceilings apply. This preview does not reserve
 capital, place orders or assert operational health. Final code sizing and every
@@ -115,27 +136,37 @@ Neither action reads paper-provider credentials or constructs a broker client.
 The source-review receipt and exact input pin are supplied by the invoking owner;
 self-consistency of a hash is not independent source approval.
 
-The coordinator must connect the result to incubation at its existing safety
-boundary. This change deliberately leaves the shared health hooks and worker
-contracts untouched:
+The incubation CLI resolves `AnalystCycleID` through the retained research
+journal. Each strategy entry selects exactly one library recipe, expression, or
+analyst cycle. An analyst entry supplies its `SleeveID` and `AnalystCycleID`;
+`GateID`, `ForwardDeclarationID`, `Assets` and `Risk` may be supplied as reviewed
+constraints. Omitted gate/forward IDs and assets come from the retained source;
+`Risk` defaults to `1`. Caller-supplied bars, actions and universe data are refused.
+The original request supplies all model data, configuration and provenance.
 
-1. Invoke the runner outside `Strategy.Decide`, with a frozen input clock and
-   separately retained gate, forward declaration and budget sources.
-2. For operation, require a prospective market result and the exact retained
-   receipt/request identity. Use the receipt completion clock for the decision,
-   then obtain post-decision quotes through the ordinary incubation path.
-3. Preserve `Target.HoldExposure` directly. Do not translate it into empty flat
-   targets or `KeepPositions`, which can resize old weights after a deposit.
-   The compiled adapter returns `ErrNoTarget` for missing, stale, unavailable or
-   hold receipts so direct use through the legacy strategy interface fails
-   before producing orders. The runner itself returns exposure holds normally.
-4. Run current family, forward-clock, health, reconciliation, risk and final
-   hard-sizing checks independently of model availability. Retained results are
-   evidence, not renewed execution authority. Protective work stays independent.
+The read-only `analyst.Retained` reader validates the request/result identity,
+source and view hashes, four call intents, exact reply hashes, parsed selections,
+transport identities, ordered clocks and final selection. A terminal result
+reforged independently of the retained trader reply is refused. It decodes into
+zero values so omitted JSON `false` cannot inherit an exposure hold. An interrupted
+or failed cycle produces a hold whose knowledge clock is the last retained event.
+Reading or retrying evidence never launches another model call.
 
-The existing `incubation` CLI recipe selector does not automatically load analyst
-receipts. That hook must preserve the hold distinction and source provenance
-above; there is no unchecked result import or model-enabled worker bypass.
+The compiled incubation bridge requires prospective evidence, source/request/
+result hashes, the exact forward declaration, and a decision at or after the
+receipt's knowledge clock. It retains the immutable receipt in decision state.
+A hold, outage, expired receipt or unavailable input becomes `HoldExposure`,
+preserving actual filled quantities through deposits. An explicit `flat` remains
+an empty complete exit target. Synthetic/unclassified evidence and mismatched
+source or owner bindings cannot enter the operational bridge.
+
+`IncubationRunner` applies the existing gate, family, forward-window,
+reconciliation, health, sizing, risk, store and final submission fences. Receipt
+lookup supplies evidence only. It never starts a safety worker or grants entry
+authority. The default one-shot `incubation --action run` has no safety worker;
+use `--action supervise` with a separate owner safety configuration for operational
+targets. The supervised loop opens analyst evidence lazily, keeping safety work
+independent of model/journal availability. See [incubation](incubation.md).
 
 ## Focused verification
 
@@ -148,8 +179,15 @@ shared pool, 1% version cap, unchanged exposure after a deposit during an outage
 and explicit flat liquidation. Clock fixtures reject backdating a completed
 model response to its earlier input time.
 
-Run focused unit/race tests for `internal/analyst`,
-`internal/strategy/analyst` and the `TestModelAnalyst` CLI test, plus `go vet` on
-those packages with the pinned Go 1.26.9 toolchain. These synthetic checks do not
+Focused checks also exercise public `IncubationRunner` entry/retry, immutable
+receipt state, outage/hold after a scheduled deposit, explicit flat exit, and
+current review caps. CLI lookup tests reject synthetic/unclassified evidence,
+reforged results, early decisions, changed assets/source and owner mismatches. A
+disposable PostgreSQL 17 contract covers JSON/timestamp round trips and no relaunch.
+
+Run focused unit/race tests for `internal/analyst`, `internal/account`,
+`internal/strategy/analyst` and the `TestIncubationAnalyst` / `TestModelAnalyst`
+service/CLI tests, plus `go vet` on those packages with pinned Go 1.26.9.
+On a shared host, use `GOFLAGS=-p=2 GOMAXPROCS=2`. These synthetic checks do not
 prove a real subscription response, broker behavior, deployment, returns,
 qualification, or protective execution.

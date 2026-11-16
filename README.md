@@ -85,8 +85,10 @@ quotes and zero fees or slippage.
 - **Callable model analyst**: the [four-stage analyst](docs/reference/model-analyst.md)
   uses subscription analysts, debate and trader views to select a constrained
   target that code sizes. Failed calls produce exposure holds; explicit flat
-  remains a separate exit. Its CLI and read-only service bridge retain frozen
-  model/cutoff and forward evidence, without broker or activation authority.
+  remains a separate exit. Current budget previews include complete book marks,
+  filled/pending commitments and review caps while model inputs stay frozen.
+  Incubation resolves retained cycles by `AnalystCycleID`, retains provenance,
+  and requires the existing supervised safety and final submission fences.
 - **Subscription research calls**: the [model adapter](docs/reference/subscription-models.md)
   runs bounded Claude and Codex prompts using host logins, with a durable daily
   call budget and hash records, independently of trading.

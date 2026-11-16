@@ -303,3 +303,24 @@ decision clock, makes retired strategies explicitly flat without calling Decide,
 and retains pending ownership and all existing admissions. Whole-book
 `IncubationReturns` is not used as strategy forward performance. Owner retirement
 is permanent and distinct from the resumable strategy breaker.
+
+## Retained model analyst cycles
+
+A strategy entry may select `AnalystCycleID` instead of `Library` or `Expression`.
+The CLI loads its immutable request and validated receipt from the research
+journal, derives its gate/forward binding and frozen asset/source data, and
+refuses replacement bars, adjustments or universe inputs. The decision must
+follow the latest receipt clock. Completed targets last at most 60 seconds;
+holds and failures preserve actual quantities, including after deposits. Only an
+explicit flat or an independent protective decision requests a complete exit.
+The plan retains the exact receipt and its request/result/source hashes.
+
+The analyst's current budget preview uses fresh complete book marks and existing
+filled/pending commitments; its model features remain frozen. Preview success is
+not operational admission. All current family, gate, forward, health,
+reconciliation, hard sizing and final submission checks still apply. A one-shot
+`--action run` has no safety worker. Operational model targets require
+`--action supervise` with the separate owner safety configuration described above.
+Analyst lookup is lazy so unavailable model evidence cannot stop the independent
+safety worker. See the [model analyst contract](model-analyst.md) for custody,
+metadata, call limits and qualification boundaries.
