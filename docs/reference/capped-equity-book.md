@@ -16,7 +16,11 @@ book before any POST.
 all held and pending symbols. Adapter grammar is checked before reservation.
 The durable reserve includes maximum execution price/quantity and a total fee
 allowance. Account rules check all outstanding reservations together, using
-settled cash and this book's marked positions. An order with an ambiguous
+settled cash and this book's marked positions. Independent pending orders
+cannot net against each other: actual holdings stay reserved, reductions do
+not release capacity before their fills, and opening legs consume separate
+capacity after all pending fees and adverse limit-to-mark gaps are reserved.
+A costly pending cover cannot leave new orders relying on its pre-loss equity. An order with an ambiguous
 outcome keeps its reserve and original client ID. Reconciliation only looks
 up the original order; it never resubmits.
 

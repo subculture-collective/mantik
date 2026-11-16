@@ -173,6 +173,11 @@ func cloneBook(b *Book) *Book {
 	}
 	return c
 }
+
+// checkReservations never treats another unfilled order as funding or a
+// completed reduction. Fees and adverse limit-to-mark gaps consume capacity
+// first. Actual holdings remain in the risk book; only the part of each pending order that exceeds independently
+// reserved reductions adds a separate exposure leg. Separate legs cannot net.
 func checkReservations(r *bookReplay, prices map[string]string, at time.Time) error {
 	b := cloneBook(r.funds)
 	ps := clonePositions(r.positions)
@@ -181,6 +186,7 @@ func checkReservations(r *bookReplay, prices map[string]string, at time.Time) er
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+	capitalReserve := new(big.Rat)
 	for _, id := range ids {
 		o := r.orders[id]
 		q, _ := bookRat(o.order.Quantity)
@@ -188,18 +194,82 @@ func checkReservations(r *bookReplay, prices map[string]string, at time.Time) er
 		if o.released || q.Sign() == 0 {
 			continue
 		}
-		p, _ := bookRat(o.order.Limit)
-		f, _ := bookRat(o.order.Fee)
-		f.Sub(f, o.fee)
-		if f.Sign() < 0 {
+		fee, _ := bookRat(o.order.Fee)
+		fee.Sub(fee, o.fee)
+		if fee.Sign() < 0 {
 			return errors.New("fee reserve exceeded")
 		}
-		if e := applyTrade(b, ps, o.order, q, p, f, prices, at); e != nil {
-			return e
+		capitalReserve.Add(capitalReserve, fee)
+		limit, _ := bookRat(o.order.Limit)
+		mark, err := bookRat(prices[o.order.Symbol])
+		if err != nil || mark.Sign() <= 0 {
+			return errors.New("missing positive pending-order mark")
+		}
+		adverse := new(big.Rat).Sub(limit, mark)
+		if o.order.Side == "sell" {
+			adverse.Neg(adverse)
+		}
+		if adverse.Sign() > 0 {
+			capitalReserve.Add(capitalReserve, new(big.Rat).Mul(q, adverse))
+		}
+	}
+	b.AddCash(new(big.Rat).Neg(capitalReserve))
+	remainingLong, remainingShort := map[string]*big.Rat{}, map[string]*big.Rat{}
+	for asset, q := range r.positions {
+		if q.Sign() > 0 {
+			remainingLong[asset] = new(big.Rat).Set(q)
+		} else if q.Sign() < 0 {
+			remainingShort[asset] = new(big.Rat).Neg(q)
+		}
+	}
+	reservationMarks := map[string]string{}
+	for a, p := range prices {
+		reservationMarks[a] = p
+	}
+	for _, id := range ids {
+		o := r.orders[id]
+		q, _ := bookRat(o.order.Quantity)
+		q.Sub(q, o.filled)
+		if o.released || q.Sign() == 0 {
+			continue
+		}
+		price, _ := bookRat(o.order.Limit)
+		fee, _ := bookRat(o.order.Fee)
+		fee.Sub(fee, o.fee)
+		// Each order must also be executable without any other pending fill.
+		if err := applyTrade(cloneBook(r.funds), clonePositions(r.positions), o.order, q, price, fee, prices, at); err != nil {
+			return err
+		}
+		reductions := remainingLong
+		if o.order.Side == "buy" {
+			reductions = remainingShort
+		}
+		if available := reductions[o.order.Symbol]; available != nil {
+			reduce := new(big.Rat).Set(q)
+			if reduce.Cmp(available) > 0 {
+				reduce.Set(available)
+			}
+			q.Sub(q, reduce)
+			available.Sub(available, reduce)
+		}
+		if q.Sign() == 0 {
+			continue
+		}
+		leg := o.order
+		leg.Symbol = "pending:" + id
+		riskPrice := new(big.Rat).Set(price)
+		mark, _ := bookRat(prices[o.order.Symbol])
+		if riskPrice.Cmp(mark) < 0 {
+			riskPrice.Set(mark)
+		}
+		reservationMarks[leg.Symbol] = riskPrice.FloatString(9)
+		if err := applyTrade(b, ps, leg, q, riskPrice, new(big.Rat), reservationMarks, at); err != nil {
+			return err
 		}
 	}
 	return nil
 }
+
 func replay(s CappedState) (*bookReplay, error) {
 	if e := s.Config.validate(); e != nil {
 		return nil, e

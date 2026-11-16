@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"testing"
@@ -252,5 +253,172 @@ func TestFirstInvalidOwnedFillDurablyHaltsAdmission(t *testing.T) {
 	o.At = at.Add(3 * time.Minute)
 	if _, e = c.Submit(context.Background(), o, map[string]string{"SPY": "100"}); e == nil || b.posts != 1 {
 		t.Fatal("halted book submitted another order", e, b.posts)
+	}
+}
+
+func marginPaperFixture(t *testing.T) (Client, *fakePaper, time.Time) {
+	t.Helper()
+	c, b, at := paperFixture(t)
+	s := storage.NewMemory()
+	if _, err := s.CreateCappedBook(context.Background(), account.DefaultCappedConfig("book", "paper-account", account.Margin, at)); err != nil {
+		t.Fatal(err)
+	}
+	c.Store = s
+	return c, b, at
+}
+func TestIndependentPendingOrdersCannotNetMarginCapacity(t *testing.T) {
+	for _, names := range [][3]string{{"a", "b", "c"}, {"z", "a", "m"}} {
+		t.Run(names[0], func(t *testing.T) {
+			c, b, at := marginPaperFixture(t)
+			o := account.BookOrder{ID: names[0], Symbol: "SPY", Quantity: "40", Limit: "100", Side: "buy", Fee: "0", At: at}
+			marks := map[string]string{"SPY": "100"}
+			if _, err := c.Submit(context.Background(), o, marks); err != nil {
+				t.Fatal(err)
+			}
+			o.ID = names[1]
+			o.Side = "sell"
+			_, _ = c.Submit(context.Background(), o, marks)
+			o.ID = names[2]
+			o.Side = "buy"
+			if _, err := c.Submit(context.Background(), o, marks); err == nil {
+				t.Fatal("two independent buys can fill beyond the $4,000 margin limit while the offsetting sell remains unfilled")
+			}
+			if b.posts != 1 {
+				t.Fatal("offsetting pending orders reached the broker", b.posts)
+			}
+		})
+	}
+}
+func TestPendingReductionDoesNotReleaseCapacityForAnotherOrder(t *testing.T) {
+	c, b, at := marginPaperFixture(t)
+	marks := map[string]string{"SPY": "100"}
+	o := account.BookOrder{ID: "holding", Symbol: "SPY", Quantity: "40", Limit: "100", Side: "buy", Fee: "0", At: at}
+	if _, err := c.Submit(context.Background(), o, marks); err != nil {
+		t.Fatal(err)
+	}
+	b.fills = []json.RawMessage{rawFill("holding-fill", "holding", "40", at.Add(time.Minute))}
+	status := b.orders["holding"]
+	status.Status = "filled"
+	status.FilledQty = "40"
+	b.orders["holding"] = status
+	if _, err := c.Sync(context.Background(), at.Add(2*time.Minute), marks); err != nil {
+		t.Fatal(err)
+	}
+	o.ID = "a-reduce"
+	o.Side = "sell"
+	o.At = at.Add(3 * time.Minute)
+	if _, err := c.Submit(context.Background(), o, marks); err != nil {
+		t.Fatal("an independent reduction must remain possible", err)
+	}
+	o.ID = "b-new"
+	o.Side = "buy"
+	o.Quantity = "1"
+	o.At = at.Add(4 * time.Minute)
+	if _, err := c.Submit(context.Background(), o, marks); err == nil {
+		t.Fatal("unfilled reduction released capacity for a new buy")
+	}
+	if b.posts != 2 {
+		t.Fatal("unfunded new exposure reached the broker", b.posts)
+	}
+}
+
+func TestEverySubsetOfAdmittedPendingOrdersFitsMargin(t *testing.T) {
+	for _, scenario := range []struct{ cash, fee string }{{"2000", "0"}, {"5000", "5"}} {
+		t.Run(scenario.cash, func(t *testing.T) {
+			c, _, at := marginPaperFixture(t)
+			s := storage.NewMemory()
+			cfg := account.DefaultCappedConfig("book", "paper-account", account.Margin, at)
+			cfg.OpeningCash = scenario.cash
+			if _, err := s.CreateCappedBook(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			c.Store = s
+			candidates := []account.BookOrder{}
+			for i := 0; i < 8; i++ {
+				symbol, qty, price := "SPY", "10", "100"
+				if i%4 >= 2 {
+					symbol, qty, price = "QQQ", "20", "50"
+				}
+				side := "buy"
+				if i%2 == 1 {
+					side = "sell"
+				}
+				candidates = append(candidates, account.BookOrder{ID: fmt.Sprintf("order-%d", i), Symbol: symbol, Quantity: qty, Limit: price, Side: side, Fee: scenario.fee, At: at})
+			}
+			admitted := []account.BookOrder{}
+			for _, order := range candidates {
+				if _, err := c.Submit(context.Background(), order, map[string]string{"SPY": "100", "QQQ": "50"}); err == nil {
+					admitted = append(admitted, order)
+				}
+			}
+			if len(admitted) == 0 {
+				t.Fatal("test admitted no orders")
+			}
+			for subset := 0; subset < 1<<len(admitted); subset++ {
+				cash, _ := new(big.Rat).SetString(scenario.cash)
+				funds := account.New(account.Margin, cash)
+				positions := []account.Position{{Asset: "SPY", Quantity: new(big.Rat), Price: big.NewRat(100, 1)}, {Asset: "QQQ", Quantity: new(big.Rat), Price: big.NewRat(50, 1)}}
+				for i, order := range admitted {
+					if subset&(1<<i) == 0 {
+						continue
+					}
+					q, _ := new(big.Rat).SetString(order.Quantity)
+					if order.Side == "sell" {
+						q.Neg(q)
+					}
+					price, _ := new(big.Rat).SetString(order.Limit)
+					fee, _ := new(big.Rat).SetString(order.Fee)
+					day := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+					if code := funds.Execute(positions, account.Trade{Asset: order.Symbol, Quantity: q, Price: price, Fee: fee}, account.Overnight, day, account.SettlementDate(day)); code != "" {
+						t.Fatalf("admitted subset %b cannot execute order %s independently: %s", subset, order.ID, code)
+					}
+					for j := range positions {
+						if positions[j].Asset == order.Symbol {
+							positions[j].Quantity.Add(positions[j].Quantity, q)
+						}
+					}
+				}
+				status := funds.Status(positions)
+				if status.Gross.Cmp(status.OvernightBuyingPower) > 0 {
+					t.Fatalf("admitted subset %b exceeded margin", subset)
+				}
+			}
+		})
+	}
+}
+
+func TestPendingCoverReservesItsAdversePriceBeforeNewExposure(t *testing.T) {
+	c, b, at := marginPaperFixture(t)
+	marks := map[string]string{"SPY": "100", "QQQ": "100"}
+	order := account.BookOrder{ID: "short", Symbol: "SPY", Quantity: "10", Limit: "100", Side: "sell", Fee: "0", At: at}
+	if _, err := c.Submit(context.Background(), order, marks); err != nil {
+		t.Fatal(err)
+	}
+	raw := rawFill("short-fill", "short", "10", at.Add(time.Minute))
+	b.fills = []json.RawMessage{json.RawMessage(strings.Replace(string(raw), `"side":"buy"`, `"side":"sell"`, 1))}
+	status := b.orders["short"]
+	status.Status = "filled"
+	status.FilledQty = "10"
+	b.orders["short"] = status
+	if _, err := c.Sync(context.Background(), at.Add(2*time.Minute), marks); err != nil {
+		t.Fatal(err)
+	}
+	order.ID = "cover"
+	order.Side = "buy"
+	order.Limit = "150"
+	order.At = at.Add(3 * time.Minute)
+	if _, err := c.Submit(context.Background(), order, marks); err != nil {
+		t.Fatal("a reduction must remain possible", err)
+	}
+	order.ID = "new-exposure"
+	order.Symbol = "QQQ"
+	order.Quantity = "20"
+	order.Limit = "100"
+	order.At = at.Add(4 * time.Minute)
+	if _, err := c.Submit(context.Background(), order, marks); err == nil {
+		t.Fatal("pending cover could consume $500 and put the book below margin minimum before this buy fills")
+	}
+	if b.posts != 2 {
+		t.Fatal("exposure reached the broker without reserving adverse cover price", b.posts)
 	}
 }

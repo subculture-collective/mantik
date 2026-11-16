@@ -74,6 +74,31 @@ func cappedContracts(t *testing.T, s CappedBookStore) {
 	if e != nil || current.Events[0].Order.Limit != "100" {
 		t.Fatal("read modified retained state", current, e)
 	}
+	marginCfg := account.DefaultCappedConfig("margin-book", "margin-account", account.Margin, at)
+	marginState, err := s.CreateCappedBook(ctx, marginCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := account.BookOrder{ID: "a", Symbol: "SPY", Quantity: "40", Limit: "100", Side: "buy", Fee: "0", At: at}
+	marginState, err = s.ApplyCappedBook(ctx, marginCfg.ID, marginState.Version, account.BookCommand{ID: "reserve-a", Kind: "reserve", At: at, Order: &order, Marks: map[string]string{"SPY": "100"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order.ID = "b"
+	order.Side = "sell"
+	if _, err = s.ApplyCappedBook(ctx, marginCfg.ID, marginState.Version, account.BookCommand{ID: "reserve-b", Kind: "reserve", At: at, Order: &order, Marks: map[string]string{"SPY": "100"}}); err == nil {
+		t.Fatal("independent pending sell netted away a pending buy")
+	}
+	order.ID = "c"
+	order.Side = "buy"
+	if _, err = s.ApplyCappedBook(ctx, marginCfg.ID, marginState.Version, account.BookCommand{ID: "reserve-c", Kind: "reserve", At: at, Order: &order, Marks: map[string]string{"SPY": "100"}}); err == nil {
+		t.Fatal("independent pending buys exceeded capped margin capacity")
+	}
+	retained, err := s.CappedBook(ctx, marginCfg.ID)
+	if err != nil || retained.Version != 1 {
+		t.Fatal("refused pending orders changed retained state", retained, err)
+	}
+
 }
 func TestMemoryCappedBook(t *testing.T) { cappedContracts(t, NewMemory()) }
 func TestPostgresContractsCappedBook(t *testing.T) {
