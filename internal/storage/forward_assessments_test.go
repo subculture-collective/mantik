@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -553,13 +554,34 @@ func TestReview92RejectForgedCollectionPostgres(t *testing.T) { TestReview92Reje
 type legacyCollectionWriter struct{ forwardAssessmentBackend }
 
 func (s legacyCollectionWriter) CollectQualification(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
+	c = clone(c)
 	c.Incubation.Qualification.DecisionSources = []json.RawMessage{json.RawMessage(`null`)}
+	return s.ApplyCappedBook(ctx, id, version, c)
+}
+
+// Keep the entire reproduction in the legacy journal. Mixing these writes with
+// modern history would seal the legacy table after the first ordinary command.
+func (s legacyCollectionWriter) ApplyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
 	b, e := s.CappedBook(ctx, id)
 	if e != nil {
 		return b, e
 	}
-	next, e := account.ApplyCappedCommand(b, c)
+	if b.Version != version {
+		return b, account.ErrBookConflict
+	}
+	next, e := account.ApplyCappedCommand(clone(b), c)
 	if e != nil {
+		return b, e
+	}
+	if next.Version == b.Version {
+		return b, nil
+	}
+	// The old journal retains every original observation rather than a modern
+	// risk checkpoint. Preserve those exact legacy prefixes for source hashes.
+	next = clone(b)
+	next.Events = append(next.Events, clone(c))
+	next.Version++
+	if e = account.ValidateCappedState(next); e != nil {
 		return b, e
 	}
 	switch v := s.forwardAssessmentBackend.(type) {
@@ -568,7 +590,7 @@ func (s legacyCollectionWriter) CollectQualification(ctx context.Context, id str
 		v.cappedBooks[id] = next
 		v.mu.Unlock()
 	case *Postgres:
-		raw, e := json.Marshal(next.Events[len(next.Events)-1])
+		raw, e := json.Marshal(c)
 		if e != nil {
 			return b, e
 		}
@@ -585,9 +607,22 @@ func TestForwardAssessmentRejectsLegacyForgedSources(t *testing.T) {
 	}
 	installAssessmentFixtureEvaluator(s)
 	d, p, b := assessmentFixture(t, legacyCollectionWriter{s}, 6)
+	if b.Version != int64(len(b.Events)) {
+		t.Fatal("legacy fixture contains compacted observations")
+	}
+	if pg, ok := s.(*Postgres); ok {
+		var originals, modern int64
+		var head bool
+		if e := pg.pool.QueryRow(context.Background(), `SELECT
+ (SELECT count(*) FROM mantik_capped_book_events WHERE book_id=$1),
+ (SELECT count(*) FROM mantik_capped_book_history WHERE book_id=$1),
+ EXISTS(SELECT 1 FROM mantik_capped_book_heads WHERE book_id=$1)`, d.BookID).Scan(&originals, &modern, &head); e != nil || originals != b.Version || modern != 0 || head {
+			t.Fatal("legacy reproduction mixed modern custody", originals, modern, head, e)
+		}
+	}
 	forwardTrial(t, s, d, "one-search")
-	if _, e := s.AssessForward(context.Background(), p.Plan.ID, func() time.Time { return d.OutcomeDeadline }); e == nil {
-		t.Fatal("retained null source gained assessment credit")
+	if _, e := s.AssessForward(context.Background(), p.Plan.ID, func() time.Time { return d.OutcomeDeadline }); !errors.Is(e, forward.ErrInvalid) {
+		t.Fatal("legacy null source was not rejected for invalid evidence", e)
 	}
 	after, e := s.CappedBook(context.Background(), d.BookID)
 	if e != nil || !reflect.DeepEqual(after, b) {
@@ -637,8 +672,8 @@ func TestForwardAssessmentRejectsLegacyForgedSources(t *testing.T) {
 		t.Fatal(e)
 	}
 	req := allocation.RebalanceRequest{ID: "legacy-forged-allocation", At: d.OutcomeDeadline.Add(time.Second), Sleeves: []allocation.Sleeve{roster[d.SleeveID]}, Targets: []allocation.SleeveTarget{{SleeveID: d.SleeveID, Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}}}, Limits: map[string]string{"SPY": "101"}, Fees: map[string]string{"SPY": "1"}}
-	if _, e = s.ApplyCappedBook(context.Background(), d.BookID, promoted.Version, account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: map[string]string{"SPY": "100"}}); e == nil {
-		t.Fatal("old null-source promotion authorized allocation")
+	if _, e = s.ApplyCappedBook(context.Background(), d.BookID, promoted.Version, account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: map[string]string{"SPY": "100"}}); !errors.Is(e, forward.ErrInvalid) {
+		t.Fatal("old null-source promotion was not rejected for invalid evidence", e)
 	}
 }
 
