@@ -225,6 +225,11 @@ The [indicative option order simulator](docs/reference/option-structures.md) adm
 up-to-four-leg structures, holds maximum-loss and partial-fill reserves, enforces
 cash-book permissions and fixed Greek caps, and records conservative bar fills.
 It grants no qualified or broker submission authority.
+The [reviewed option recipes](docs/reference/option-library.md) select and size
+covered calls, cash-secured puts and margin-only spreads, then run through that
+simulator's admission, protected fills and closing. Their retained-data adapter
+preserves acquisition clocks; the available local archive does not establish a
+2024-onward historical backtest.
 The pure [indicator adapter](docs/reference/indicators.md) provides SMA, EMA, RSI,
 Wilder ATR, Bollinger bands and rolling return volatility with maintained TA-Lib parity tests.
 
