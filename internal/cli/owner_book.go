@@ -92,7 +92,10 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 		}
 		// ReadString deliberately rejects even a complete pin without a newline at
 		// EOF. No default yes, partial input or failed reader authorizes mutation.
-		line, e := bufio.NewReader(io.LimitReader(in, 512)).ReadString('\n')
+		line, e := readOwnerConfirmation(ctx, in)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if e != nil || strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") != terms.Confirmation {
 			return errors.New("owner action cancelled; no mutation sent")
 		}
@@ -122,6 +125,32 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 		return err
 	}
 	return outputOwnerBook(out, v, *format)
+}
+
+func readOwnerConfirmation(ctx context.Context, in io.Reader) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	type readResult struct {
+		line string
+		err  error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		line, err := bufio.NewReader(io.LimitReader(in, 512)).ReadString('\n')
+		done <- readResult{line, err}
+	}()
+	select {
+	case result := <-done:
+		return result.line, result.err
+	case <-ctx.Done():
+		// The command is abandoning this confirmation input. Release a blocked
+		// terminal or pipe read as well as returning without any owner mutation.
+		if closer, ok := in.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return "", ctx.Err()
+	}
 }
 
 func ownerBookRequest(ctx context.Context, base, path string, input, output any) error {

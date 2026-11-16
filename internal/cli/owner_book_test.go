@@ -24,6 +24,7 @@ func TestOwnerBookTerminalWalkthrough(t *testing.T) {
 	s := storage.NewMemory()
 	at := time.Now().UTC().Add(-time.Second)
 	cfg := account.DefaultCappedConfig("owner-walkthrough", "isolated-paper", account.Cash, at.AddDate(0, 0, -6))
+	cfg.FundingMode = account.OwnerReceipts
 	b, err := s.CreateCappedBook(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
