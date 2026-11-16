@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -394,5 +396,188 @@ func TestDeskInterruptedTrialIsDiscoverableBeforeResult(t *testing.T) {
 	ids := AttemptIDs(d.ID, events)
 	if len(ids) != 1 || ids[0] != d.ID+"-trial-1" {
 		t.Fatal("unfinished trial omitted", ids)
+	}
+}
+
+func TestDeskDuplicateMembersRejectAndRetainEverySpec(t *testing.T) {
+	first := strings.Replace(validSpec, "desk_trend", "discarded_spec", 1)
+	for name, raw := range map[string]string{
+		"spec":          `{"tool":"run_backtest","spec":` + first + `,"spec":` + validSpec + `}`,
+		"case alias":    `{"tool":"run_backtest","Spec":` + first + `,"spec":` + validSpec + `}`,
+		"nested member": `{"tool":"run_backtest","spec":` + strings.Replace(validSpec, `"gross":0.7`, `"gross":0.7,"gross":0.8`, 1) + `}`,
+		"tool":          `{"tool":"done","tool":"run_backtest","spec":` + validSpec + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := fixture()
+			d.MaxCalls = 1
+			j := &memoryJournal{}
+			s := storage.NewMemory()
+			c := &scripted{t: t, replies: []string{raw}}
+			got, e := Run(context.Background(), j, s, nil, c, d)
+			want := 1
+			if name == "spec" || name == "case alias" {
+				want = 2
+			}
+			if e != nil || got.Status != "call_limit" || len(got.TrialIDs) != want {
+				t.Fatal(got, e)
+			}
+			records, e := s.StrategyTrials(context.Background(), d.Family)
+			if e != nil || len(records) != want {
+				t.Fatal(records, e)
+			}
+			for _, r := range records {
+				if r.Outcome == nil || r.Outcome.Status != "failed" || len(r.Returns) != 0 || !strings.Contains(string(r.Start.Spec), digest([]byte(raw))) {
+					t.Fatal("duplicate member reached execution or lost evidence", r)
+				}
+			}
+			ids := AttemptIDs(d.ID, j.events[d.ID])
+			if fmt.Sprint(ids) != fmt.Sprint(got.TrialIDs) {
+				t.Fatal("attempt discovery differs", ids, got.TrialIDs)
+			}
+			retry, e := Run(context.Background(), j, s, nil, c, d)
+			if e != nil || retry.EventsSHA256 != got.EventsSHA256 || c.calls != 1 {
+				t.Fatal("duplicate retry changed evidence", retry, e)
+			}
+			pending := &memoryJournal{events: map[string][]Event{d.ID: append([]Event(nil), j.events[d.ID][:3]...)}}
+			noCalls := &scripted{t: t}
+			recovered, e := Run(context.Background(), pending, s, nil, noCalls, d)
+			if e != nil || len(recovered.TrialIDs) != want || noCalls.calls != 0 {
+				t.Fatal("pending duplicate reply recovery", recovered, e)
+			}
+		})
+	}
+}
+
+func TestDeskRecoversTerminalResultWithoutAnotherCall(t *testing.T) {
+	d := fixture()
+	j := &memoryJournal{}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	events := []Event{{Kind: "start", At: at, Body: marshal(d)}, {Kind: "call", At: at, Body: marshal("intent")}, {Kind: "reply", At: at, Body: marshal(`{"tool":"done"}`)}, {Kind: "result", At: at, Body: marshal(toolResult{Code: "done"})}}
+	for i, ev := range events {
+		if e := j.Append(context.Background(), d.ID, i, ev); e != nil {
+			t.Fatal(e)
+		}
+	}
+	c := &scripted{t: t}
+	got, e := Run(context.Background(), j, storage.NewMemory(), nil, c, d)
+	if e != nil || c.calls != 0 || got.Status != "completed" || got.Calls != 1 || len(j.events[d.ID]) != 5 {
+		t.Fatal(got, e)
+	}
+	retry, e := Run(context.Background(), j, storage.NewMemory(), nil, c, d)
+	if e != nil || retry.EventsSHA256 != got.EventsSHA256 || c.calls != 0 {
+		t.Fatal(retry, e)
+	}
+}
+
+func TestDeskRejectsFutureParentWithoutLosingAttempt(t *testing.T) {
+	d := fixture()
+	s := storage.NewMemory()
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	// Capture the declaration without finishing it; future clocks are allowed
+	// in retained trial history but cannot parent an earlier model reply.
+	_, _, _ = dispatch(context.Background(), &unfinishedTrials{Trials: s}, nil, d, nil, `{"tool":"compose_spec","spec":`+validSpec+`}`, at.Add(time.Hour), 9)
+	parent := d.ID + "-trial-9"
+	out, _, e := dispatch(context.Background(), s, nil, d, nil, `{"tool":"run_backtest","spec":`+validSpec+`,"parents":["`+parent+`"]}`, at, 1)
+	if e != nil || out.TrialID == "" || out.Code != "spec_rejected" {
+		t.Fatal(out, e)
+	}
+	r, e := s.StrategyTrial(context.Background(), out.TrialID)
+	if e != nil || r.Outcome == nil || r.Outcome.Status != "failed" || len(r.Start.Parents) != 0 || len(r.Returns) != 0 || !strings.Contains(string(r.Start.Spec), parent) {
+		t.Fatal("invalid chronology suppressed or executed attempt", r, e)
+	}
+	if n, e := s.StrategyTrialSearchTotal(context.Background(), d.Family); e != nil || n != 2 {
+		t.Fatal(n, e)
+	}
+}
+
+type microsecondJournal struct{ memoryJournal }
+
+func (j *microsecondJournal) Append(ctx context.Context, id string, seq int, e Event) error {
+	e.At = e.At.UTC().Truncate(time.Microsecond)
+	return j.memoryJournal.Append(ctx, id, seq, e)
+}
+
+func TestDeskFailedCallHashMatchesMicrosecondRoundtrip(t *testing.T) {
+	d := fixture()
+	j := &microsecondJournal{}
+	s := storage.NewMemory()
+	c := &scripted{t: t, fail: errors.New("private fixture diagnostic")}
+	first, e := Run(context.Background(), j, s, nil, c, d)
+	if e == nil || first.Status != "model_unavailable" {
+		t.Fatal(first, e)
+	}
+	retry, e := Run(context.Background(), j, s, nil, c, d)
+	if e != nil || first.EventsSHA256 != retry.EventsSHA256 || c.calls != 1 {
+		t.Fatal("failure hash changed after timestamp roundtrip", first, retry, e)
+	}
+}
+
+func TestDeskTransportRejectedOutputRetainsFailedAttempt(t *testing.T) {
+	for _, mode := range []string{"oversize", "valid_tool_with_failed_exit"} {
+		t.Run(mode, func(t *testing.T) { testDeskRejectedOutput(t, mode) })
+	}
+}
+
+func testDeskRejectedOutput(t *testing.T, mode string) {
+	t.Helper()
+	d := fixture()
+	d.MaxCalls = 1
+	dir := t.TempDir()
+	// The fixture is an isolated CLI replacement; no provider is contacted.
+	fake := filepath.Join(dir, "codex")
+	script := "#!/usr/bin/python3\nprint('{\"tool\":\"run_backtest\",\"spec\":{\"name\":\"'+'x'*70000+'\"}}')\n"
+	wantLength := 65536
+	if mode == "valid_tool_with_failed_exit" {
+		raw := `{"tool":"run_backtest","spec":` + validSpec + `}`
+		script = "#!/bin/sh\nprintf '%s' '" + raw + "'\nexit 1\n"
+		wantLength = len(raw)
+	}
+	if e := os.WriteFile(fake, []byte(script), 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PATH", dir)
+	c, e := model.OpenJournal(filepath.Join(dir, "journal"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	j := &memoryJournal{}
+	s := storage.NewMemory()
+	got, e := Run(context.Background(), j, s, nil, c, d)
+	if e == nil || got.Status != "model_unavailable" || len(got.TrialIDs) != 1 || got.Calls != 1 {
+		t.Fatal(got, e)
+	}
+	var rejected rejectedReply
+	if e = json.Unmarshal(j.events[d.ID][2].Body, &rejected); e != nil || len(rejected.Response) != wantLength || digest([]byte(rejected.Response)) != rejected.ResponseSHA256 || !rejected.Incomplete {
+		t.Fatal("bounded rejected stdout missing", e)
+	}
+	r, e := s.StrategyTrial(context.Background(), got.TrialIDs[0])
+	if e != nil || r.Outcome == nil || r.Outcome.Status != "failed" || len(r.Returns) != 0 {
+		t.Fatal(r, e)
+	}
+	if n, e := s.StrategyTrialSearchTotal(context.Background(), d.Family); e != nil || n != 1 {
+		t.Fatal(n, e)
+	}
+	// Recover each post-reply crash window against the retained trial. Rejected
+	// stdout must never reach the dispatcher, and no model call may be repeated.
+	for _, count := range []int{3, 4, 5} {
+		recovery := &memoryJournal{events: map[string][]Event{d.ID: append([]Event(nil), j.events[d.ID][:count]...)}}
+		noCalls := &scripted{t: t}
+		retry, e := Run(context.Background(), recovery, s, nil, noCalls, d)
+		if e != nil || retry.Status != "model_unavailable" || len(retry.TrialIDs) != 1 || noCalls.calls != 0 {
+			t.Fatal("rejected-output recovery", count, retry, e)
+		}
+	}
+	// A crash immediately after retaining the rejected reply must also create
+	// the failed trial when no prior trial write reached storage.
+	recovery := &memoryJournal{events: map[string][]Event{d.ID: append([]Event(nil), j.events[d.ID][:3]...)}}
+	fresh := storage.NewMemory()
+	noCalls := &scripted{t: t}
+	retry, e := Run(context.Background(), recovery, fresh, nil, noCalls, d)
+	if e != nil || retry.Status != "model_unavailable" || len(retry.TrialIDs) != 1 || noCalls.calls != 0 {
+		t.Fatal("rejected output before trial start", retry, e)
+	}
+	r, e = fresh.StrategyTrial(context.Background(), retry.TrialIDs[0])
+	if e != nil || r.Outcome == nil || r.Outcome.Status != "failed" || len(r.Returns) != 0 {
+		t.Fatal("recovered rejected output reached engine", r, e)
 	}
 }

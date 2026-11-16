@@ -107,6 +107,9 @@ func validDigest(s string) bool {
 }
 func marshal(v any) []byte { b, _ := json.Marshal(v); return b }
 func strict(raw []byte, v any) error {
+	if e := uniqueJSON(json.NewDecoder(bytes.NewReader(raw))); e != nil {
+		return e
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
@@ -116,6 +119,37 @@ func strict(raw []byte, v any) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// uniqueJSON rejects duplicate object members before decoding can discard them.
+func uniqueJSON(d *json.Decoder) error {
+	token, e := d.Token()
+	if e != nil {
+		return e
+	}
+	delim, compound := token.(json.Delim)
+	if !compound {
+		return nil
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		if delim == '{' {
+			key, e := d.Token()
+			if e != nil {
+				return e
+			}
+			name, ok := key.(string)
+			if !ok || seen[name] {
+				return ErrInvalid
+			}
+			seen[name] = true
+		}
+		if e := uniqueJSON(d); e != nil {
+			return e
+		}
+	}
+	_, e = d.Token()
+	return e
 }
 
 // Validate fails closed on unknown cutoffs, unbound triggers and data clocks.

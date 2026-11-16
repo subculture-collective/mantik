@@ -40,7 +40,8 @@ type Call struct {
 	Timeout         time.Duration
 }
 type Record struct {
-	// Response is available only to the immediate caller, never JSON or journal output.
+	// Response is bounded stdout available only to the immediate caller, never
+	// JSON or journal output. A failed call's bytes are evidence, not usable output.
 	Response       string    `json:"-"`
 	Provider       Provider  `json:"provider"`
 	Model          string    `json:"model,omitempty"`
@@ -218,10 +219,10 @@ func (j *Journal) Call(ctx context.Context, call Call, dailyBudget int) (Record,
 	}
 	record.FinishedAt = j.now().UTC()
 	record.ResponseSHA256 = digest(string(output))
+	record.Response = string(output)
 	record.Status = "failed"
 	if err == nil {
 		record.Status = "completed"
-		record.Response = string(output)
 	} else if strings.Contains(strings.ToLower(err.Error()), "rate limit") || strings.Contains(strings.ToLower(err.Error()), "429") {
 		record.Status = "rate_limited"
 		state.RetryAfter = record.FinishedAt.Add(5 * time.Minute)

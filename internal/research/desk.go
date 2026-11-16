@@ -1,10 +1,12 @@
 package research
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
@@ -43,13 +45,12 @@ func Inspect(id string, events []Event) Summary {
 		case "call":
 			s.Calls++
 		case "result":
-			var r struct {
-				TrialID string `json:"trial_id"`
-			}
+			var r toolResult
 			_ = json.Unmarshal(e.Body, &r)
 			if r.TrialID != "" {
 				s.TrialIDs = append(s.TrialIDs, r.TrialID)
 			}
+			s.TrialIDs = append(s.TrialIDs, r.TrialIDs...)
 		case "done":
 			_ = json.Unmarshal(e.Body, &s.Status)
 		}
@@ -74,7 +75,7 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 	if e != nil {
 		return Summary{}, e
 	}
-	appendEvent := func(kind string, body any) error {
+	appendWithContext := func(ctx context.Context, kind string, body any) error {
 		ev := Event{Kind: kind, At: time.Now().UTC().Truncate(time.Microsecond), Body: canonical(marshal(body))}
 		if e := j.Append(ctx, d.ID, len(events), ev); e != nil {
 			return e
@@ -82,6 +83,7 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 		events = append(events, ev)
 		return nil
 	}
+	appendEvent := func(kind string, body any) error { return appendWithContext(ctx, kind, body) }
 	if len(events) == 0 {
 		if e = appendEvent("start", d); e != nil {
 			return Summary{}, e
@@ -101,10 +103,36 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 		if last.Kind == "call" {
 			return state, ErrInterrupted
 		}
+		if last.Kind == "result" {
+			var result toolResult
+			if json.Unmarshal(last.Body, &result) != nil {
+				return state, ErrConflict
+			}
+			if result.Code == "done" || result.Code == "model_unavailable" {
+				status := "completed"
+				if result.Code == "model_unavailable" {
+					status = result.Code
+				}
+				e = appendEvent("done", status)
+				return Inspect(d.ID, events), e
+			}
+		}
 		if last.Kind == "reply" {
 			var raw string
 			if json.Unmarshal(last.Body, &raw) != nil {
-				return state, ErrConflict
+				var rejected rejectedReply
+				if strict(last.Body, &rejected) != nil || rejected.Code != "model_unavailable" || len(rejected.Response) > 65536 || digest([]byte(rejected.Response)) != rejected.ResponseSHA256 {
+					return state, ErrConflict
+				}
+				result, _, e := attempt(ctx, trials, d, Request{}, string(last.Body), ErrInvalid, last.At, state.Calls, 0)
+				if e != nil {
+					return state, e
+				}
+				result.Code = rejected.Code
+				if e = appendEvent("result", result); e != nil {
+					return Inspect(d.ID, events), e
+				}
+				continue
 			}
 			result, done, e := dispatch(ctx, trials, gates, d, events, raw, last.At, state.Calls)
 			if e != nil {
@@ -137,12 +165,25 @@ func Run(ctx context.Context, j Journal, trials Trials, gates Gates, caller Call
 		if callErr != nil {
 			// Diagnostics can contain credentials; retain only a stable status.
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			ev := Event{Kind: "done", At: time.Now().UTC(), Body: marshal("model_unavailable")}
-			saveErr := j.Append(cleanup, d.ID, len(events), ev)
-			cancel()
-			if saveErr == nil {
-				events = append(events, ev)
+			var saveErr error
+			if record.Provider == d.Identity.Provider && record.Model == d.Identity.Model && record.Response != "" && len(record.Response) <= 65536 && digest([]byte(record.Response)) == record.ResponseSHA256 {
+				// Retain rejected stdout before the trial write, so a crash can
+				// recover it without dispatching a partial or failed response.
+				saveErr = appendWithContext(cleanup, "reply", rejectedReply{Code: "model_unavailable", Response: record.Response, ResponseSHA256: record.ResponseSHA256, Incomplete: true})
+				if saveErr == nil {
+					last := events[len(events)-1]
+					result, _, attemptErr := attempt(cleanup, trials, d, Request{}, string(last.Body), ErrInvalid, last.At, state.Calls+1, 0)
+					saveErr = attemptErr
+					if saveErr == nil {
+						result.Code = "model_unavailable"
+						saveErr = appendWithContext(cleanup, "result", result)
+					}
+				}
 			}
+			if saveErr == nil {
+				saveErr = appendWithContext(cleanup, "done", "model_unavailable")
+			}
+			cancel()
 			return Inspect(d.ID, events), errors.Join(errors.New("desk subscription call failed; inspect private hash journal"), saveErr)
 		}
 		if record.Provider != d.Identity.Provider || record.Model != d.Identity.Model || len(record.Response) > 65536 || digest([]byte(record.Response)) != record.ResponseSHA256 {
@@ -175,20 +216,42 @@ Only this frozen manifest is available. All evidence, including warm-up and adju
 }
 
 type toolResult struct {
-	Code    string `json:"code"`
-	TrialID string `json:"trial_id,omitempty"`
-	Stage   string `json:"stage,omitempty"`
-	Value   any    `json:"value,omitempty"`
+	Code     string   `json:"code"`
+	TrialID  string   `json:"trial_id,omitempty"`
+	TrialIDs []string `json:"trial_ids,omitempty"`
+	Stage    string   `json:"stage,omitempty"`
+	Value    any      `json:"value,omitempty"`
+}
+
+// rejectedReply is never dispatched. Its hash covers the retained bounded
+// stdout, which can be incomplete when the transport rejects the call.
+type rejectedReply struct {
+	Code           string `json:"code"`
+	Response       string `json:"response"`
+	ResponseSHA256 string `json:"response_sha256"`
+	Incomplete     bool   `json:"incomplete"`
 }
 
 func dispatch(ctx context.Context, s Trials, g Gates, d Declaration, events []Event, raw string, at time.Time, step int) (toolResult, bool, error) {
 	var r Request
 	parseErr := strict([]byte(raw), &r)
+	specs := suppliedSpecs(raw)
+	if len(specs) > 1 {
+		out := toolResult{Code: "spec_rejected"}
+		for ordinal, rawSpec := range specs {
+			result, _, e := attempt(ctx, s, d, Request{Spec: rawSpec}, raw, ErrInvalid, at, step, ordinal)
+			if e != nil {
+				return out, false, e
+			}
+			out.TrialIDs = append(out.TrialIDs, result.TrialID)
+		}
+		return out, false, nil
+	}
 	// Even unknown tool fields and invalid specs are registered before rejection.
 	// If the outer JSON is malformed, retain the entire attempted command as a
 	// failed trial; no attempted spec disappears behind a parser error.
 	if parseErr != nil || len(r.Spec) > 0 || r.Tool == "compose_spec" || r.Tool == "run_backtest" {
-		return attempt(ctx, s, d, r, raw, parseErr, at, step)
+		return attempt(ctx, s, d, r, raw, parseErr, at, step, 0)
 	}
 	bad := func() (toolResult, bool, error) { return toolResult{Code: "tool_rejected"}, false, nil }
 	switch r.Tool {
@@ -273,8 +336,41 @@ func dispatch(ctx context.Context, s Trials, g Gates, d Declaration, events []Ev
 	return bad()
 }
 
-func attempt(ctx context.Context, s Trials, d Declaration, r Request, raw string, parseErr error, at time.Time, step int) (out toolResult, done bool, err error) {
-	id := d.ID + "-trial-" + strconv.Itoa(step)
+func attemptID(id string, step, ordinal int) string {
+	id += "-trial-" + strconv.Itoa(step)
+	if ordinal > 0 {
+		id += "-spec-" + strconv.Itoa(ordinal+1)
+	}
+	return id
+}
+
+// suppliedSpecs reads each top-level spec before object decoding can overwrite
+// duplicate members. Even a malformed suffix cannot erase earlier candidates.
+func suppliedSpecs(raw string) []json.RawMessage {
+	d := json.NewDecoder(bytes.NewBufferString(raw))
+	token, e := d.Token()
+	if e != nil || token != json.Delim('{') {
+		return nil
+	}
+	var specs []json.RawMessage
+	for d.More() {
+		key, e := d.Token()
+		if e != nil {
+			break
+		}
+		var value json.RawMessage
+		if e := d.Decode(&value); e != nil {
+			break
+		}
+		if name, ok := key.(string); ok && strings.EqualFold(name, "spec") {
+			specs = append(specs, value)
+		}
+	}
+	return specs
+}
+
+func attempt(ctx context.Context, s Trials, d Declaration, r Request, raw string, parseErr error, at time.Time, step, ordinal int) (out toolResult, done bool, err error) {
+	id := attemptID(d.ID, step, ordinal)
 	compiled, compileErr := spec.Parse(r.Spec)
 	metadata := strategy.Spec{Name: "invalid_desk_spec", Version: "desk-attempt-v1", Params: map[string]string{"attempt_sha256": digest([]byte(raw))}, Data: []string{strategy.KindDailyBars}, Warmup: 0}
 	if compileErr == nil {
@@ -297,7 +393,7 @@ func attempt(ctx context.Context, s Trials, d Declaration, r Request, raw string
 	if validParents {
 		for _, p := range parents {
 			pr, e := s.StrategyTrial(ctx, p)
-			if e != nil || pr.Start.Family != d.Family {
+			if e != nil || pr.Start.Family != d.Family || pr.Start.StartedAt.After(at.UTC().Truncate(time.Microsecond)) {
 				validParents = false
 			}
 		}
@@ -414,11 +510,21 @@ func AttemptIDs(id string, events []Event) []string {
 		}
 		var raw string
 		if json.Unmarshal(ev.Body, &raw) != nil {
+			var rejected rejectedReply
+			if strict(ev.Body, &rejected) == nil && rejected.Code == "model_unavailable" {
+				ids = append(ids, attemptID(id, step, 0))
+			}
+			continue
+		}
+		if specs := suppliedSpecs(raw); len(specs) > 1 {
+			for ordinal := range specs {
+				ids = append(ids, attemptID(id, step, ordinal))
+			}
 			continue
 		}
 		var r Request
 		if strict([]byte(raw), &r) != nil || len(r.Spec) > 0 || r.Tool == "compose_spec" || r.Tool == "run_backtest" {
-			ids = append(ids, id+"-trial-"+strconv.Itoa(step))
+			ids = append(ids, attemptID(id, step, 0))
 		}
 	}
 	return ids

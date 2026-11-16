@@ -138,6 +138,26 @@ func TestRunnerUsesStdinAndBoundsOutput(t *testing.T) {
 	}
 }
 
+func TestJournalFailedStdoutRemainsPrivateEvidence(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "journal")
+	j, err := OpenJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const output = `{"tool":"run_backtest","spec":{"name":"private_attempt"}}`
+	j.run = func(context.Context, string, string, ...string) ([]byte, error) {
+		return []byte(output), errors.New("fixture process failed")
+	}
+	r, err := j.Call(context.Background(), Call{Provider: Codex, Model: "gpt-6.1-sol", Prompt: "fixture", Timeout: time.Second}, 1)
+	if err == nil || r.Status != "failed" || r.Response != output || r.ResponseSHA256 != digest(output) {
+		t.Fatal("failed stdout evidence missing", r.Status, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "calls.jsonl"))
+	if err != nil || strings.Contains(string(raw), "private_attempt") || !strings.Contains(string(raw), r.ResponseSHA256) {
+		t.Fatal("failed stdout escaped private return or hash missing", err)
+	}
+}
+
 func TestJournalRejectsCorruptBudgetAndSymlinks(t *testing.T) {
 	for _, raw := range []string{`{"date":"broken","calls":0}`, `{"date":"2026-11-15","calls":-1}`} {
 		root := filepath.Join(t.TempDir(), "journal")

@@ -102,6 +102,14 @@ coverage, revisions and authenticity. `historical_market_unqualified` and
 The journal intentionally excludes other sessions' evidence that might have a
 different model cutoff. Evolution across sessions remains separate work.
 
+Duplicate JSON object members are rejected before decoding can replace an
+earlier value. Multiple top-level `spec` members each create a failed trial;
+none is executed. The first keeps the usual session/turn trial ID, and later
+candidates have `-spec-2`, `-spec-3`, and subsequent suffixes. Invalid parent
+lineage, including a parent whose start follows the reply, is removed from the
+trial's lineage and retained in the original attempted command. It still counts
+as a failed attempt.
+
 ## Durability and recovery
 
 `0123_research_desk_events.sql` is installed by the normal storage bootstrap
@@ -119,11 +127,23 @@ prefix and full-reply hash in the trial; their exact bytes remain in the session
 reply event. Raw replies and source data are private
 research inputs and must never be committed.
 
+When the subscription transport rejects a call that produced stdout, the
+adapter returns at most 65,536 bytes as private evidence. The desk retains that
+bounded output and its SHA-256 in a rejected reply record, registers one failed
+attempt conservatively, and ends with `model_unavailable`. That hash covers
+the retained bytes; it does not claim to cover any discarded suffix. Rejected
+output is marked incomplete and never dispatched, even if it contains a valid
+tool request. Provider diagnostics remain excluded.
+
 A PostgreSQL advisory lock fences each session across processes. Exact event
 and trial retries are idempotent; changed declarations or event writes conflict.
 A retained reply without a result is recovered through the dispatcher without
 calling the model again. If its trial already finished, it is read back. If it
 started without an outcome, recovery marks it crashed and does not rerun it.
+A retained terminal tool result completes its missing terminal event without
+another model call. Rejected-output replies recover only the failed attempt
+and terminal status, never tool execution. All event clocks use microsecond
+precision before retention and hashing, matching PostgreSQL round trips.
 A call intent without a retained reply stops with `ErrInterrupted`; the system
 cannot know whether that subscription request ran. It never relaunches that
 uncertain request. Starts and partial stored returns still count toward search

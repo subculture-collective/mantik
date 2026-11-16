@@ -67,6 +67,17 @@ func TestPostgresContractsResearchDesk(t *testing.T) {
 	if e != nil || retry.EventsSHA256 != result.EventsSHA256 || caller.calls != 3 {
 		t.Fatal("retry changed history", retry, e)
 	}
+	failed := d
+	failed.ID += "-failure"
+	unavailable := &scripted{t: t, fail: errors.New("private fixture diagnostic")}
+	firstFailure, e := Run(ctx, j, s, s, unavailable, failed)
+	if e == nil || firstFailure.Status != "model_unavailable" {
+		t.Fatal(firstFailure, e)
+	}
+	failureRetry, e := Run(ctx, reopened, s, s, unavailable, failed)
+	if e != nil || firstFailure.EventsSHA256 != failureRetry.EventsSHA256 || unavailable.calls != 1 {
+		t.Fatal("failed-call hash changed after SQL roundtrip", firstFailure, failureRetry, e)
+	}
 	for _, sql := range []string{"UPDATE mantik_research_desk_events SET kind=kind", "DELETE FROM mantik_research_desk_events", "TRUNCATE mantik_research_desk_events"} {
 		if _, e = j.pool.Exec(ctx, sql); e == nil {
 			t.Fatal("mutated evidence", sql)
