@@ -110,6 +110,10 @@ lineage, including a parent whose start follows the reply, is removed from the
 trial's lineage and retained in the original attempted command. It still counts
 as a failed attempt.
 
+Bar availability must be at or after actual observation as well as publication.
+A capture observed later cannot be backdated into a historical decision view;
+an invalid ordering is rejected before any session event or model call.
+
 ## Durability and recovery
 
 `0123_research_desk_events.sql` is installed by the normal storage bootstrap

@@ -191,7 +191,7 @@ func (d Declaration) Validate(now time.Time) error {
 	seen := map[string]bool{}
 	for _, b := range d.Data.Bars {
 		day, e := time.Parse(time.DateOnly, b.Date)
-		if e != nil || !day.After(cutoff) || b.Date > d.AsOf.UTC().Format(time.DateOnly) || b.PublishedAt.IsZero() || b.ObservedAt.IsZero() || b.AvailableAt.IsZero() || b.PublishedAt.Before(day) || b.AvailableAt.Before(b.PublishedAt) || b.ObservedAt.Before(b.PublishedAt) || b.ObservedAt.After(d.AsOf) || b.AvailableAt.After(d.AsOf) || b.PublishedAt.After(d.AsOf) || !b.PublishedAt.After(cutoff.AddDate(0, 0, 1)) {
+		if e != nil || !day.After(cutoff) || b.Date > d.AsOf.UTC().Format(time.DateOnly) || b.PublishedAt.IsZero() || b.ObservedAt.IsZero() || b.AvailableAt.IsZero() || b.PublishedAt.Before(day) || b.AvailableAt.Before(b.PublishedAt) || b.AvailableAt.Before(b.ObservedAt) || b.ObservedAt.Before(b.PublishedAt) || b.ObservedAt.After(d.AsOf) || b.AvailableAt.After(d.AsOf) || b.PublishedAt.After(d.AsOf) || !b.PublishedAt.After(cutoff.AddDate(0, 0, 1)) {
 			return ErrInvalid
 		}
 		key := b.AssetID + "/" + b.Date
