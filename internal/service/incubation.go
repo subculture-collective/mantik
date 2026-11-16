@@ -128,13 +128,18 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				return out, e
 			}
 		}
-		bindings := account.ForwardBindings(state)
+		historicalBindings := account.ForwardBindings(state)
+		bindings := map[string]string{}
 		for _, s := range req.Strategies {
+			id := historicalBindings[s.SleeveID]
 			if s.ForwardDeclarationID != "" {
-				if bindings[s.SleeveID] != "" && bindings[s.SleeveID] != s.ForwardDeclarationID {
+				if id != "" && id != s.ForwardDeclarationID {
 					return out, forward.ErrConflict
 				}
-				bindings[s.SleeveID] = s.ForwardDeclarationID
+				id = s.ForwardDeclarationID
+			}
+			if id != "" {
+				bindings[s.SleeveID] = id
 			}
 		}
 		p := account.IncubationPlan{ForwardDeclarations: bindings, Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}

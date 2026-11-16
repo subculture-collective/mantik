@@ -184,3 +184,161 @@ func TestForwardEntryExpiresAtActualSubmissionClock(t *testing.T) {
 		t.Fatal("slow reservation extended window", e, b.posts, s.calls)
 	}
 }
+
+func TestForwardLatePartialFillUsesOldestExecutionClock(t *testing.T) {
+	ctx := context.Background()
+	r, req, _, b, _ := forwardRunnerFixture(t)
+	out, err := r.Run(ctx, req)
+	if err != nil || len(out.Distribution.Orders) != 1 {
+		t.Fatal(out, err)
+	}
+	order := out.Distribution.Orders[0]
+	later := req.ExecuteAt.Add(20 * time.Second)
+	earlier := req.ExecuteAt.Add(10 * time.Second)
+	b.fill(t, order.ID, "seen-later-first", "0.01", "100", "0", later, false)
+	if _, err = r.Sync(ctx, later.Add(time.Second), req.Quotes); err != nil {
+		t.Fatal(err)
+	}
+	// A second activity poll exposes an earlier partial fill for the same order.
+	b.fill(t, order.ID, "late-discovery-earlier", "0.01", "100", "0", earlier, false)
+	at := req.ExecuteAt.Add(30 * time.Second)
+	if _, err = r.Sync(ctx, at, req.Quotes); err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.Store.CappedBook(ctx, r.BookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := account.ForwardHoldingOpened(state, req.Strategies[0].SleeveID, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opened.Equal(earlier) {
+		t.Fatalf("holding clock extends by %s: got %s, earliest owned fill is %s", opened.Sub(earlier), opened.Format(time.RFC3339Nano), earlier.Format(time.RFC3339Nano))
+	}
+}
+
+type alternateForwardStrategy struct{}
+
+func (alternateForwardStrategy) Spec() strategy.Spec {
+	return strategy.Spec{Name: "alternate-forward-fixture", Version: "1", Data: []string{strategy.KindDailyBars}}
+}
+func (alternateForwardStrategy) Decide(strategy.View) (strategy.Decision, error) {
+	return strategy.Decision{}, nil
+}
+
+func alternateForwardCycle(t *testing.T, r IncubationRunner, req IncubationRequest) IncubationRequest {
+	t.Helper()
+	ctx := context.Background()
+	m := r.Store.(*storage.Memory)
+	old, e := m.StrategyGate(ctx, req.Strategies[0].GateID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	alt := alternateForwardStrategy{}
+	d := old.Declaration
+	d.ID = "alternate-forward-gate"
+	d.StrategyID, e = alt.Spec().ID()
+	if e != nil {
+		t.Fatal(e)
+	}
+	d.Spec, e = json.Marshal(alt.Spec())
+	if e != nil {
+		t.Fatal(e)
+	}
+	gate, e := m.DeclareStrategyGate(ctx, d)
+	if e != nil {
+		t.Fatal(e)
+	}
+	decision := *old.Decision
+	decision.ID = d.ID
+	decision.StrategyID = d.StrategyID
+	decision.At = gate.DeclaredAt
+	decision.DeclarationSHA256, e = IncubationInputHash(d)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = m.RecordStrategyGate(ctx, decision); e != nil {
+		t.Fatal(e)
+	}
+	next := nextForwardCycle(req, "alternate-roster", req.DecidedAt.Add(time.Minute))
+	next.Strategies = []IncubatingStrategy{{SleeveID: "alternate", GateID: d.ID, Risk: "0.02", Strategy: alt, Source: incubationTestSource{}, Assets: []string{"SPY"}}}
+	return next
+}
+
+func TestForwardInactiveBindingLeavesRosterAndReturns(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+			ctx := context.Background()
+			r, req, s, _, record := forwardRunnerFixture(t)
+			if !bound {
+				req.Strategies[0].ForwardDeclarationID = ""
+			}
+			s.decide = func(strategy.View) (strategy.Decision, error) { return strategy.Decision{}, nil }
+			if _, e := r.Run(ctx, req); e != nil {
+				t.Fatal(e)
+			}
+			next := alternateForwardCycle(t, r, req)
+			r.now = func() time.Time { return next.ExecuteAt }
+			out, e := r.Run(ctx, next)
+			if e != nil || len(out.Plan.ForwardDeclarations) != 0 || out.QualificationCredit {
+				t.Fatal("inactive binding leaked into current roster", out, e)
+			}
+			// The lifetime binding survives omission. Returning the same sleeve after
+			// expiry must inherit its declaration and skip the unavailable strategy.
+			if bound {
+				returning := nextForwardCycle(req, "return-old-sleeve", record.Declaration.WindowEnd.Add(time.Minute))
+				returning.Strategies[0].ForwardDeclarationID = ""
+				calls := s.calls
+				s.decide = func(strategy.View) (strategy.Decision, error) {
+					return strategy.Decision{}, errors.New("unavailable strategy")
+				}
+				r.now = func() time.Time { return returning.ExecuteAt }
+				out, e = r.Run(ctx, returning)
+				if e != nil || out.Plan.ForwardDeclarations[req.Strategies[0].SleeveID] != record.Declaration.ID || s.calls != calls {
+					t.Fatal("omission detached historical binding", out, e, s.calls)
+				}
+				returning = nextForwardCycle(returning, "changed-binding", returning.ExecuteAt.Add(time.Minute))
+				returning.Strategies[0].ForwardDeclarationID = "other-declaration"
+				r.now = func() time.Time { return returning.ExecuteAt }
+				if _, e = r.Run(ctx, returning); !errors.Is(e, forward.ErrConflict) {
+					t.Fatal("historical binding replaced", e)
+				}
+			}
+		})
+	}
+}
+
+func TestForwardActiveSleeveCannotLeaveRoster(t *testing.T) {
+	for _, filled := range []bool{false, true} {
+		t.Run(fmt.Sprint(filled), func(t *testing.T) {
+			ctx := context.Background()
+			r, req, _, b, record := forwardRunnerFixture(t)
+			initial, e := r.Run(ctx, req)
+			if e != nil || len(initial.Distribution.Orders) != 1 {
+				t.Fatal(initial, e)
+			}
+			if filled {
+				order := initial.Distribution.Orders[0]
+				at := req.ExecuteAt.Add(time.Second)
+				b.fill(t, order.ID, "owned-active-fill", order.Quantity, "100", "0", at, true)
+				if _, e = r.Sync(ctx, at.Add(time.Second), req.Quotes); e != nil {
+					t.Fatal(e)
+				}
+			}
+			next := alternateForwardCycle(t, r, req)
+			r.now = func() time.Time { return next.ExecuteAt }
+			posts := b.posts
+			if _, e = r.Run(ctx, next); e == nil || !strings.Contains(e.Error(), "active_sleeve_omitted") || b.posts != posts {
+				t.Fatal("active exposure omitted", e, b.posts, posts)
+			}
+			state, e := r.Store.CappedBook(ctx, r.BookID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if account.ForwardBindings(state)[req.Strategies[0].SleeveID] != record.Declaration.ID {
+				t.Fatal("failed roster detached binding")
+			}
+		})
+	}
+}

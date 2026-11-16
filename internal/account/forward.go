@@ -3,6 +3,7 @@ package account
 import (
 	"errors"
 	"math/big"
+	"slices"
 	"time"
 )
 
@@ -27,8 +28,7 @@ func ForwardBindings(s CappedState) map[string]string {
 // the sleeve resets it. This is deliberately conservative across assets.
 func ForwardHoldingOpened(s CappedState, sleeve string, at time.Time) (time.Time, error) {
 	orders := map[string]bool{}
-	positions := map[string]*big.Rat{}
-	var opened time.Time
+	fills := []BookFill{}
 	for _, e := range s.Events {
 		if e.At.After(at) {
 			return time.Time{}, errors.New("forward clock precedes retained book state")
@@ -43,6 +43,15 @@ func ForwardHoldingOpened(s CappedState, sleeve string, at time.Time) (time.Time
 		if f.At.After(at) {
 			return time.Time{}, errors.New("forward fill is in the future")
 		}
+		fills = append(fills, *f)
+	}
+	// Sync receipts can discover an earlier execution after a later one. Keep
+	// receipt checks above, but derive continuous exposure in economic order.
+	// Equal execution clocks retain their original receipt order.
+	slices.SortStableFunc(fills, func(a, b BookFill) int { return a.At.Compare(b.At) })
+	positions := map[string]*big.Rat{}
+	var opened time.Time
+	for _, f := range fills {
 		q, err := bookRat(f.Quantity)
 		if err != nil {
 			return time.Time{}, err

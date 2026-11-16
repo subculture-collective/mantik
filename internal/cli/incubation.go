@@ -31,7 +31,7 @@ type incubationInput struct {
 }
 type incubationStrategyInput struct {
 	SleeveID, GateID, Risk string
-	ForwardDeclarationID   string
+	ForwardDeclarationID   string `json:",omitempty"`
 	Library                *library.Config
 	Expression             *strategyspec.Definition
 	Assets                 []string

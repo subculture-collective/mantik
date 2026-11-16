@@ -79,7 +79,10 @@ verdict, a return calculation, or a claim that observations qualify.
 In an incubation input's strategy entry, set `ForwardDeclarationID` to the
 retained declaration ID. The runner verifies its strategy/gate/book/sleeve pins
 and retains the binding in the incubation plan. Later runs inherit that binding;
-omitting it cannot detach the sleeve. This first version binds one declaration
+omitting it cannot detach the sleeve. Each new plan includes bindings only for
+its requested roster. A flat inactive sleeve may be omitted; its binding remains
+in history and is inherited if the same sleeve returns. Pending orders or filled
+exposure still prevent omission. This first version binds one declaration
 per sleeve for its lifetime; use a new sleeve for a separately declared window.
 
 During the entry interval the strategy uses its ordinary target interface.
@@ -90,8 +93,10 @@ old target weights and can resize after a deposit. The explicit hold creates
 no orders and keeps the old target weights for replay. The store refuses raw
 nonzero target writes outside the entry interval, even if they omit the binding.
 
-The holding clock comes from owned fills, starting at the oldest continuously
-open exposure in the sleeve. Adding or partially reducing positions does not
+Owned fills replay by actual execution time when deriving the holding clock;
+late discovery of an earlier execution cannot extend the deadline. Receipt
+validation and the retained receipt journal remain unchanged. The clock starts
+at the oldest continuously open exposure in the sleeve. Adding or partially reducing positions does not
 reset it; fully flattening does. This is conservative across multiple assets.
 Pre-window exposure must flatten before it can participate in this window.
 Both the decision and execution clocks are checked. At holding expiry or the

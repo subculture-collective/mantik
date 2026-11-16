@@ -279,10 +279,94 @@ func forwardBindingContracts(t *testing.T, s forwardBackend) {
 	if r, e := s.ForwardDeclaration(ctx, d.ID); e != nil || r.SHA256 != record.SHA256 {
 		t.Fatal(r, e)
 	}
+	// A later plan contains only its requested roster. The old binding remains
+	// in history and must still fence an omitted sleeve when it returns.
+	gate, e := s.StrategyGate(ctx, d.GateID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	nextGate := gate.Declaration
+	nextGate.ID = "alternate-gate"
+	spec := d.Spec
+	spec.Version = "alternate"
+	nextGate.StrategyID, e = spec.ID()
+	if e != nil {
+		t.Fatal(e)
+	}
+	nextGate.Spec, e = json.Marshal(spec)
+	if e != nil {
+		t.Fatal(e)
+	}
+	retainedGate, e := s.DeclareStrategyGate(ctx, nextGate)
+	if e != nil {
+		t.Fatal(e)
+	}
+	decision := *gate.Decision
+	decision.ID = nextGate.ID
+	decision.StrategyID = nextGate.StrategyID
+	decision.At = retainedGate.DeclaredAt
+	decision.DeclarationSHA256, e = strategygate.Hash(nextGate)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RecordStrategyGate(ctx, decision); e != nil {
+		t.Fatal(e)
+	}
+	nextPlan := clone(plan)
+	nextPlan.ForwardDeclarations = nil
+	nextPlan.DecidedAt = d.OutcomeDeadline.Add(time.Minute)
+	nextPlan.Rebalance.ID = "alternate-allocation"
+	nextPlan.Rebalance.At = nextPlan.DecidedAt.Add(time.Second)
+	nextPlan.Rebalance.Sleeves[0].ID = "alternate"
+	nextPlan.Rebalance.Sleeves[0].StrategyID = nextGate.StrategyID
+	nextPlan.Rebalance.Sleeves[0].GateID = nextGate.ID
+	nextPlan.Rebalance.Targets = []allocation.SleeveTarget{{SleeveID: "alternate", Decision: allocation.TargetDecision{}}}
+	nextPlan.Decisions = []account.IncubationDecision{{SleeveID: "alternate", StrategyID: nextGate.StrategyID}}
+	nextPlan.Costs = map[string]executioncost.Model{"alternate": executioncost.Default()}
+	quote := nextPlan.Quotes["SPY"]
+	quote.OccurredAt = nextPlan.Rebalance.At
+	quote.ReceivedAt = quote.OccurredAt
+	nextPlan.Quotes["SPY"] = quote
+	state, e = s.CappedBook(ctx, d.BookID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, c := range []account.BookCommand{
+		{ID: "alternate-plan", Kind: "incubation_plan", At: nextPlan.Rebalance.At, Incubation: &nextPlan},
+		{ID: nextPlan.Rebalance.ID, Kind: "rebalance", At: nextPlan.Rebalance.At, Rebalance: &nextPlan.Rebalance, Marks: map[string]string{"SPY": "100"}},
+	} {
+		state, e = s.ApplyCappedBook(ctx, d.BookID, state.Version, c)
+		if e != nil {
+			t.Fatal("inactive roster replacement", e)
+		}
+	}
+	if account.ForwardBindings(state)[d.SleeveID] != d.ID {
+		t.Fatal("omission detached historical binding")
+	}
+	returning := clone(plan.Rebalance)
+	returning.ID = "return-expired-sleeve"
+	returning.At = nextPlan.Rebalance.At.Add(time.Minute)
+	returning.Targets[0].Decision = allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}
+	if _, e = s.ApplyCappedBook(ctx, d.BookID, state.Version, account.BookCommand{ID: returning.ID, Kind: "rebalance", At: returning.At, Rebalance: &returning, Marks: map[string]string{"SPY": "100"}}); e == nil || !strings.Contains(e.Error(), "forward clocks") {
+		t.Fatal("omitted sleeve returned without its binding", e)
+	}
 }
 func TestMemoryForwardBinding(t *testing.T) { forwardBindingContracts(t, NewMemory()) }
 func TestPostgresContractsForwardBinding(t *testing.T) {
-	forwardBindingContracts(t, timerPostgres(t, "forward_binding"))
+	p := timerPostgres(t, "forward_binding")
+	forwardBindingContracts(t, p)
+	reopened, e := OpenPostgres(context.Background(), p.pool.Config().ConnString())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer reopened.Close()
+	state, e := reopened.CappedBook(context.Background(), "forward-book")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if account.ForwardBindings(state)["model"] != "forward-one" {
+		t.Fatal("restart lost omitted binding")
+	}
 }
 
 func TestMemoryForwardMissingAndIneligibleSources(t *testing.T) {
