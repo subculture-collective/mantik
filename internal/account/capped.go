@@ -353,7 +353,7 @@ func replay(s CappedState) (*bookReplay, error) {
 				r.halted = false
 			}
 		case "review_declare":
-			if e := validateReviewDeclaration(s, c); e != nil {
+			if e := validateReviewDeclaration(s, c, r.sleeves); e != nil {
 				return nil, e
 			}
 		case "strategy_review":

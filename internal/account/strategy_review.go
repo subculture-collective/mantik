@@ -88,16 +88,14 @@ func reviewDeclaration(s CappedState, id string) (*ReviewDeclaration, time.Time)
 	return nil, time.Time{}
 }
 
-func validateReviewDeclaration(s CappedState, c BookCommand) error {
+func validateReviewDeclaration(s CappedState, c BookCommand, roster map[string]allocation.Sleeve) error {
 	s = reviewPrefix(s, c.ID)
 	d := c.ReviewDeclaration
 	if d == nil || !bookID.MatchString(d.ID) || c.ID != "review-declare-"+d.ID || d.Policy != ReviewPolicy || !slices.Contains([]string{"cash", "spy"}, d.Benchmark) || len(d.Backtest) > 2520 {
 		return errors.New("invalid review declaration")
 	}
-	roster, err := PortfolioRoster(s)
-	if err != nil {
-		return err
-	}
+	// Use ownership already computed at this replay position. Replaying the
+	// prefix here would recursively validate every preceding declaration again.
 	owner, ok := roster[d.SleeveID]
 	if !ok || owner.StrategyID != d.StrategyID || owner.GateID != d.GateID {
 		return errors.New("review declaration owner differs")
