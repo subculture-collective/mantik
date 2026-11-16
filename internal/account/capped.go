@@ -58,6 +58,8 @@ type BookCommand struct {
 	Marks                                   map[string]string
 	Rebalance                               *allocation.RebalanceRequest
 	RiskControl                             *risk.Control
+	Incubation                              *IncubationPlan `json:",omitempty"`
+	ModelFill                               *IncubationFill `json:",omitempty"`
 }
 
 // CappedState is an append-only replayable ledger. Version is its event count.
@@ -343,9 +345,16 @@ func replay(s CappedState) (*bookReplay, error) {
 			if c.RiskControl.Action == "owner_clear_halt" {
 				r.halted = false
 			}
+		case "incubation_plan":
+			if e := validateIncubationPlan(s, c); e != nil {
+				return nil, e
+			}
 		case "rebalance":
 			if c.Rebalance == nil || c.Rebalance.ID != c.ID || !c.Rebalance.At.Equal(c.At) {
 				return nil, errors.New("invalid rebalance command")
+			}
+			if e := checkIncubationRebalance(s, c); e != nil {
+				return nil, e
 			}
 			if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
 				return nil, e
@@ -382,6 +391,9 @@ func replay(s CappedState) (*bookReplay, error) {
 				if e := checkSizedOrder(r, o); e != nil {
 					return nil, e
 				}
+				if e := checkIncubationOrder(s, c); e != nil {
+					return nil, e
+				}
 				if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
 					return nil, e
 				}
@@ -408,6 +420,9 @@ func replay(s CappedState) (*bookReplay, error) {
 				return nil, errors.New("missing fill")
 			}
 			f := *c.Fill
+			if e := validateIncubationFill(s, c); e != nil {
+				return nil, e
+			}
 			o := r.orders[f.OrderID]
 			q, qe := bookRat(f.Quantity)
 			p, pe := bookRat(f.Price)

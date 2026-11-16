@@ -58,6 +58,9 @@ quotes and zero fees or slippage.
   capital before submission and reconciles its own fills and scheduled funding.
   Strategy orders must match a retained distributor plan and pass the fixed
   exposure, cash, loss and emergency-control checks before submission.
+  The opt-in [incubation runner](docs/reference/incubation.md) runs eligible
+  strategies on retained prospective quotes and reports the worse venue/model
+  fill result, with no qualification credit.
 - **Kalshi data**: [public collection](docs/reference/kalshi-data.md) retains
   weather-market rules and order-book observations for point-in-time reads.
   [Weather probabilities](docs/reference/kalshi-weather.md) retain pre-close
