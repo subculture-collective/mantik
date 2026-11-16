@@ -13,6 +13,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/migrations"
 	"time"
 )
@@ -66,6 +67,7 @@ func TestPostgresContractsStrategyGates(t *testing.T) {
 	p := timerPostgres(t, "strategy_gates")
 	gateStorageContracts(t, p)
 	portfolioJournalContracts(t, p)
+	portfolioFamilyFenceContracts(t, p)
 	ctx := context.Background()
 	if _, e := p.pool.Exec(ctx, migrations.StrategyGates); e != nil {
 		t.Fatal("migration replay", e)
@@ -88,6 +90,44 @@ func TestPostgresContractsStrategyGates(t *testing.T) {
 	}
 }
 
+func portfolioFamilyFenceContracts(t *testing.T, p *Postgres) {
+	t.Helper()
+	ctx := context.Background()
+	g, e := p.StrategyGate(ctx, "retained-gate")
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = p.StartStrategyTrial(ctx, strategytrial.Start{ID: "new-family-attempt", Family: g.Declaration.Family, StrategyID: g.Declaration.StrategyID, Spec: g.Declaration.Spec, Config: json.RawMessage(`{"additional":true}`), DataSHA256: g.Declaration.DataSHA256, EvidenceClass: "synthetic_fixture", StartedAt: time.Now().UTC()})
+	if e != nil {
+		t.Fatal(e)
+	}
+	state, e := p.CappedBook(ctx, "risk-book")
+	if e != nil {
+		t.Fatal(e)
+	}
+	at := state.Config.OpenedAt
+	marks := map[string]string{"SPY": "100"}
+	req := *state.Events[0].Rebalance
+	req.ID = "stale-rebalance"
+	if _, e = p.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: req.ID, Kind: "rebalance", At: at, Rebalance: &req, Marks: marks}); e == nil || !strings.Contains(e.Error(), "gate_search_history_changed") {
+		t.Fatal("SQL rebalance accepted stale search", e)
+	}
+	control := risk.Control{Action: "unkill"}
+	state, e = p.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: "unkill", Kind: "risk_control", At: at, RiskControl: &control, Marks: marks})
+	if e != nil {
+		t.Fatal(e)
+	}
+	snap, e := account.SnapshotCapped(state, marks, at)
+	if e != nil {
+		t.Fatal(e)
+	}
+	v := snap.Distribution.Orders[0]
+	o := account.BookOrder{ReduceOnly: v.ReduceOnly, ID: v.ID, AllocationID: v.AllocationID, SleeveID: v.SleeveID, StrategyID: v.StrategyID, Symbol: v.Symbol, Quantity: v.Quantity, Limit: v.Limit, Side: v.Side, Fee: v.Fee, At: v.At}
+	if _, e = p.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: "reserve-" + o.ID, Kind: "portfolio_reserve", At: at, Order: &o, Marks: marks}); e == nil || !strings.Contains(e.Error(), "gate_search_history_changed") {
+		t.Fatal("SQL reservation accepted stale search", e)
+	}
+}
+
 func portfolioJournalContracts(t *testing.T, s CappedBookStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -96,8 +136,12 @@ func portfolioJournalContracts(t *testing.T, s CappedBookStore) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	sid := "strategy-" + strings.Repeat("a", 64)
-	req := allocation.RebalanceRequest{ID: "rebalance", At: at, Sleeves: []allocation.Sleeve{{ID: "trend", StrategyID: sid, Stage: "incubation", Risk: "1", Minimum: "1"}}, Targets: []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}}}, Limits: map[string]string{"SPY": "100"}, Fees: map[string]string{"SPY": "0"}}
+	gate, e := s.(strategygate.Store).StrategyGate(ctx, "retained-gate")
+	if e != nil {
+		t.Fatal(e)
+	}
+	sid := gate.Declaration.StrategyID
+	req := allocation.RebalanceRequest{ID: "rebalance", At: at, Sleeves: []allocation.Sleeve{{ID: "trend", StrategyID: sid, Stage: "forward_only", ModelDriven: true, GateID: "retained-gate", Risk: "1", Minimum: "1"}}, Targets: []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}}}, Limits: map[string]string{"SPY": "100"}, Fees: map[string]string{"SPY": "0"}}
 	marks := map[string]string{"SPY": "100"}
 	state, e = s.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: req.ID, Kind: "rebalance", At: at, Rebalance: &req, Marks: marks})
 	if e != nil {
@@ -117,7 +161,7 @@ func portfolioJournalContracts(t *testing.T, s CappedBookStore) {
 		t.Fatal("risk/distribution journal lost", snap, e)
 	}
 	v := snap.Distribution.Orders[0]
-	o := account.BookOrder{ID: v.ID, AllocationID: v.AllocationID, SleeveID: v.SleeveID, StrategyID: v.StrategyID, Symbol: v.Symbol, Quantity: v.Quantity, Limit: v.Limit, Side: v.Side, Fee: v.Fee, At: v.At}
+	o := account.BookOrder{ReduceOnly: v.ReduceOnly, ID: v.ID, AllocationID: v.AllocationID, SleeveID: v.SleeveID, StrategyID: v.StrategyID, Symbol: v.Symbol, Quantity: v.Quantity, Limit: v.Limit, Side: v.Side, Fee: v.Fee, At: v.At}
 	if _, e = s.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: "reserve-" + o.ID, Kind: "portfolio_reserve", At: at, Order: &o, Marks: marks}); e == nil || !strings.Contains(e.Error(), "risk_kill_switch") {
 		t.Fatal("retained kill bypassed", e)
 	}

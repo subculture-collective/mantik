@@ -13,6 +13,10 @@ changed retries conflict. Migration replay retains existing books and trials.
 The declaration also binds assets, engine version, account type, leverage mode
 and exact base/stress costs. Undeclared deposits or larger test capital cannot
 make a current-size gate pass. Incubation must use the gate's account type.
+Each variant's full minimum trade plan is frozen with the declaration and must
+match every retained fold. The reviewed default settlement-calendar identity
+must also match. A malformed retained config yields a failed integrity check
+and a complete failed report rather than leaving the declaration undecided.
 
 `EvaluateGate` reads the complete family once, including failed and unfinished
 starts in search multiplicity. Expected attempts must match the declaration,
@@ -68,6 +72,13 @@ Insufficient minimum capital produces a `minimum_balance` wait; pending orders
 produce `pending_orders`. Underfunding can still produce flattening exits.
 After a deposit, the next rebalance recalculates every eligible sleeve from
 current equity. Deposits are unallocated capital flows until then.
+Rebalances must include every retained sleeve with holdings or pending orders.
+A strategy version keeps one stable sleeve identity, even after an inactive
+sleeve is omitted. The order check counts the entire book against the fixed
+incubation pool and per-model-version cap; omitted or offsetting holdings cannot
+create extra capacity. A `KeepPositions` signal reuses the last complete
+target weights when capital is redistributed, so deposits and roster changes
+can resize it without asking the strategy for an extra signal.
 
 The retained distribution binds order ID, strategy, sleeve, side, quantity,
 limit, fee and clock. `Client.Submit` accepts only an exact retained order.
@@ -75,6 +86,10 @@ Quantity changes and raw orders fail before a broker POST. Independent pending
 orders cannot net or release capacity, and a sleeve waits for reconciliation
 before replacing an outstanding target. The existing journaled broker adapter
 continues to fence ambiguous submission retries.
+Opening quantities use the greater of mark and executable limit, with a
+conservative reserve for adverse price gaps. Mark-priced sizing cannot produce
+an order that immediately breaches its own risk cap. Reducing orders retain a
+reduce-only flag and cannot become flips if holdings change before admission.
 
 ## Persistent risk brake
 
@@ -83,6 +98,11 @@ Admission checks execute with the book version lock, then the latest brake is
 checked again before POST, including retries of already-reserved orders.
 Displayed `Risk.At` identifies the last persisted observation; new submissions,
 rebalances and portfolio reconciliation update it with complete current marks.
+New rebalances and reservations validate gate freshness in the same transaction
+as persistence. PostgreSQL takes sorted family advisory locks shared with new
+trial starts; memory uses its store mutex. A newly started attempt cannot slip
+between a search-total check and admission. Already retained explicit flat
+targets remain executable when a research family becomes stale.
 
 Hard refusal codes include `risk_gross_limit` (100%), `risk_position_limit`
 (5%), `risk_sleeve_limit` (20%) and `risk_cash_reserve` (20%). The unitized loss
@@ -102,6 +122,10 @@ positive observed equity and resets the recorded loss baseline. Ordinary
 resume, deposits, price recovery, a new day and process restart do not reset it.
 Controls are operator commands, separate from the strategy interface. The
 local CLI caller must already have owner access to the selected database.
+Reconciliation and bad-submission halts use distinct journal identities after
+an owner clear; an old halt ID cannot prevent a later discrepancy from halting
+the book again. Public portfolio reservations use the same owned-fill recovery,
+partial-fill reconciliation and terminal release path as earlier ledger orders.
 
 ```sh
 mise exec -- go run ./cmd/mantik capped-risk --id book --at 2026-11-16T15:00:00Z --marks /tmp/mantik-current-marks.json --database-env MANTIK_GATECHECK_DATABASE_URL
@@ -135,6 +159,9 @@ Reports and original observations remain outside Git. The issue report records
 the tested source, input/report hashes, decision reasons and fresh-process CLI
 readbacks. Full stock-universe coverage and prospective evidence remain separate
 requirements for future admission and qualification.
+The checker also exports every family start, daily return and outcome and
+verifies that its hash matches the decision's retained family snapshot before
+the disposable database is removed.
 
 ## Rollback
 

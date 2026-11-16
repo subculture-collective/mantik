@@ -11,9 +11,69 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 )
 
+func retainPortfolioRoster(r *bookReplay, req allocation.RebalanceRequest) error {
+	if r.sleeves == nil {
+		r.sleeves = map[string]allocation.Sleeve{}
+	}
+	requested := map[string]allocation.Sleeve{}
+	for _, s := range req.Sleeves {
+		requested[s.ID] = s
+	}
+	net := map[string]*big.Rat{}
+	active := map[string]bool{}
+	for _, o := range r.orders {
+		key := o.order.SleeveID + "/" + o.order.Symbol
+		if net[key] == nil {
+			net[key] = new(big.Rat)
+		}
+		q := new(big.Rat).Set(o.filled)
+		if o.order.Side == "sell" {
+			q.Neg(q)
+		}
+		net[key].Add(net[key], q)
+		full, _ := bookRat(o.order.Quantity)
+		if !o.released && full.Cmp(o.filled) > 0 {
+			active[o.order.SleeveID] = true
+		}
+	}
+	for key, q := range net {
+		if q.Sign() != 0 {
+			active[strings.SplitN(key, "/", 2)[0]] = true
+		}
+	}
+	for id, old := range r.sleeves {
+		next, included := requested[id]
+		if active[id] && !included {
+			return errors.New("active_sleeve_omitted")
+		}
+		if included && (next.StrategyID != old.StrategyID || next.Stage != old.Stage || next.ModelDriven != old.ModelDriven) {
+			return errors.New("retained_sleeve_identity_changed")
+		}
+		for nextID, v := range requested {
+			if nextID != id && v.StrategyID == old.StrategyID {
+				return errors.New("strategy_version_already_owns_sleeve")
+			}
+		}
+	}
+	for id, s := range requested {
+		r.sleeves[id] = s
+	}
+	return nil
+}
+
+// PortfolioRoster returns immutable version ownership retained by the book.
+func PortfolioRoster(s CappedState) (map[string]allocation.Sleeve, error) {
+	r, e := replay(s)
+	if e != nil {
+		return nil, e
+	}
+	return r.sleeves, nil
+}
+
 func sizingSnapshot(r *bookReplay, prices map[string]string) allocation.SizingSnapshot {
 	ps, _ := marks(r.positions, prices) // callers validate complete marks first
 	out := allocation.SizingSnapshot{Equity: r.funds.Status(ps).Equity.FloatString(9), Marks: prices, Positions: []allocation.SizingPosition{}}
+	out.PreviousTargets = r.targets
 	positions := map[string]*big.Rat{}
 	for _, o := range r.orders {
 		key := o.order.SleeveID + "/" + o.order.Symbol
@@ -69,7 +129,7 @@ func checkSizedOrder(r *bookReplay, o BookOrder) error {
 		if s.ID != o.ID {
 			continue
 		}
-		if s.SleeveID == o.SleeveID && s.StrategyID == o.StrategyID && s.Symbol == o.Symbol && s.Quantity == o.Quantity && s.Limit == o.Limit && s.Fee == o.Fee && s.Side == o.Side && s.At.Equal(o.At) {
+		if s.ReduceOnly == o.ReduceOnly && s.SleeveID == o.SleeveID && s.StrategyID == o.StrategyID && s.Symbol == o.Symbol && s.Quantity == o.Quantity && s.Limit == o.Limit && s.Fee == o.Fee && s.Side == o.Side && s.At.Equal(o.At) {
 			return nil
 		}
 		return errors.New("distributor_order_changed")
@@ -151,6 +211,9 @@ func checkPortfolioRisk(r *bookReplay, order BookOrder, prices map[string]string
 	if want.Sign() == 0 || order.Side == "sell" && held.Sign() > 0 && want.Cmp(held) <= 0 || order.Side == "buy" && held.Sign() < 0 && want.Cmp(new(big.Rat).Neg(held)) <= 0 {
 		candidateReducing = true
 	}
+	if order.ReduceOnly && !candidateReducing {
+		return errors.New("risk_reduce_only")
+	}
 	for _, id := range ids {
 		o := r.orders[id]
 		q, _ := bookRat(o.order.Quantity)
@@ -208,10 +271,22 @@ func checkPortfolioRisk(r *bookReplay, order BookOrder, prices map[string]string
 		positions[key].Add(positions[key], new(big.Rat).Mul(opening, price))
 	}
 	gross, pos, sleeve := new(big.Rat), new(big.Rat), new(big.Rat)
+	incubation := new(big.Rat)
+	models := map[string]*big.Rat{}
 	assetExposure, sleeveExposure := map[string]*big.Rat{}, map[string]*big.Rat{}
 	for key, v := range positions {
 		parts := strings.SplitN(key, "/", 2)
 		gross.Add(gross, v)
+		owner, known := r.sleeves[parts[0]]
+		if !known || owner.Stage == "incubation" || owner.Stage == "forward_only" {
+			incubation.Add(incubation, v)
+		}
+		if owner.ModelDriven || owner.Stage == "forward_only" {
+			if models[owner.StrategyID] == nil {
+				models[owner.StrategyID] = new(big.Rat)
+			}
+			models[owner.StrategyID].Add(models[owner.StrategyID], v)
+		}
 		if assetExposure[parts[1]] == nil {
 			assetExposure[parts[1]] = new(big.Rat)
 		}
@@ -231,7 +306,13 @@ func checkPortfolioRisk(r *bookReplay, order BookOrder, prices map[string]string
 			sleeve.Set(v)
 		}
 	}
-	reasons, e := risk.Check(r.risk, risk.OrderView{StrategyID: order.StrategyID, Equity: equity.FloatString(18), CashAfter: cash.FloatString(18), Gross: gross.FloatString(18), Position: pos.FloatString(18), Sleeve: sleeve.FloatString(18), Reducing: candidateReducing})
+	modelExposure := new(big.Rat)
+	for _, v := range models {
+		if v.Cmp(modelExposure) > 0 {
+			modelExposure.Set(v)
+		}
+	}
+	reasons, e := risk.Check(r.risk, risk.OrderView{StrategyID: order.StrategyID, Equity: equity.FloatString(18), CashAfter: cash.FloatString(18), Gross: gross.FloatString(18), Position: pos.FloatString(18), Sleeve: sleeve.FloatString(18), Incubation: incubation.FloatString(18), ModelVersion: modelExposure.FloatString(18), Reducing: candidateReducing})
 	if e != nil {
 		return e
 	}

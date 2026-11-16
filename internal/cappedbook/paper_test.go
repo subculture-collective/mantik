@@ -20,6 +20,7 @@ import (
 var _ Broker = (*alpaca.PaperTrader)(nil)
 
 type fakePaper struct {
+	mu        sync.Mutex
 	posts     int
 	orders    map[string]alpaca.PaperOrder
 	fills     []json.RawMessage
@@ -28,6 +29,8 @@ type fakePaper struct {
 
 func (b *fakePaper) PaperAccountID() string { return "paper-account" }
 func (b *fakePaper) Submit(_ context.Context, o alpaca.StockOrder) (alpaca.PaperOrder, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.posts++
 	v := alpaca.PaperOrder{ID: "venue-" + o.ClientOrderID, ClientOrderID: o.ClientOrderID, Symbol: o.Symbol, Qty: o.Qty, Side: o.Side, Type: o.Type, TimeInForce: o.TimeInForce, LimitPrice: o.LimitPrice, Status: "new", FilledQty: "0"}
 	b.orders[o.ClientOrderID] = v
@@ -37,13 +40,19 @@ func (b *fakePaper) Submit(_ context.Context, o alpaca.StockOrder) (alpaca.Paper
 	return v, nil
 }
 func (b *fakePaper) Order(_ context.Context, id string) (alpaca.PaperOrder, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	v, ok := b.orders[id]
 	if !ok {
 		return v, alpaca.ErrPaperNotSubmitted
 	}
 	return v, nil
 }
-func (b *fakePaper) Fills(context.Context, time.Time) ([]json.RawMessage, error) { return b.fills, nil }
+func (b *fakePaper) Fills(context.Context, time.Time) ([]json.RawMessage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.fills, nil
+}
 func paperFixture(t *testing.T) (Client, *fakePaper, time.Time) {
 	t.Helper()
 	at := time.Date(2026, 11, 2, 15, 0, 0, 0, time.UTC)
@@ -171,6 +180,8 @@ func TestConcurrentReservationsCannotOverspend(t *testing.T) {
 }
 
 func (b *fakePaper) AbortUnsubmitted(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if _, ok := b.orders[id]; ok {
 		return alpaca.ErrSubmissionUnknown
 	}

@@ -24,6 +24,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy/library"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 )
 
 type source struct {
@@ -130,6 +131,7 @@ func run() error {
 	}
 	defer store.Close()
 	reports := []strategygate.Record{}
+	families := map[string][]strategytrial.Record{}
 	for _, kind := range []string{library.Trend, library.Momentum, library.Reversal, library.LowVol} {
 		base, e := library.New(library.Default(kind))
 		if e != nil {
@@ -145,6 +147,7 @@ func run() error {
 		}
 		d := strategygate.Declaration{EngineVersion: engine.Version, Account: "cash", ID: *prefix + "-" + kind, Family: "base-" + kind, ExperimentID: *prefix + "-" + kind, StrategyID: sid, BaseCandidate: "base", Balance: "2000", Policy: "backtest-gate-v1", Benchmark: "spy", Spec: spec, Calendar: dates, Train: 300, Test: 100, Purge: 5, Embargo: 5, Cash: cash, SPY: spy, DataSHA256: digest, Coverage: false, Availability: false}
 		d.Assets = []string{in.AssetID}
+		d.SettlementCalendar = "us-equity-t1-v1"
 		d.BaseCost = []byte(`{"version":"base-v1","fee_bps":"1","slippage_bps":"5"}`)
 		d.StressCost = []byte(`{"version":"stress-v1","fee_bps":"2","slippage_bps":"10"}`)
 		cs := []backtest.Candidate{}
@@ -169,7 +172,11 @@ func run() error {
 			if e != nil {
 				return e
 			}
-			d.Candidates = append(d.Candidates, strategygate.Variant{Name: name, Spec: variant})
+			frozenMinimum, e := json.Marshal(plan)
+			if e != nil {
+				return e
+			}
+			d.Candidates = append(d.Candidates, strategygate.Variant{Name: name, Spec: variant, Minimum: frozenMinimum})
 		}
 		if _, e = backtest.DeclareGate(ctx, store, d); e != nil {
 			return e
@@ -184,11 +191,24 @@ func run() error {
 			return e
 		}
 		reports = append(reports, r)
+		records, e := store.StrategyTrials(ctx, d.Family)
+		if e != nil {
+			return e
+		}
+		familyHash, e := strategygate.Hash(records)
+		if e != nil {
+			return e
+		}
+		if familyHash != r.Decision.FamilySHA256 {
+			return errors.New("exported trial evidence differs from gate snapshot")
+		}
+		families[d.Family] = records
 	}
 	return json.NewEncoder(os.Stdout).Encode(struct {
 		InputSHA256, Boundary string
 		Reports               []strategygate.Record
-	}{digest, "real retained SPY prices; synthetic historical clocks and one-ETF membership; no coverage/availability qualification", reports})
+		Families              map[string][]strategytrial.Record
+	}{digest, "real retained SPY prices; synthetic historical clocks and one-ETF membership; no coverage/availability qualification", reports, families})
 }
 func main() {
 	if e := run(); e != nil {

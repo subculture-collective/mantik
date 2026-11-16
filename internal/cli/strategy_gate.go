@@ -19,7 +19,7 @@ import (
 func gateFlags(name string, errOut io.Writer) (*flag.FlagSet, *string, *string) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	db := fs.String("database-env", "MANTIK_DATABASE_URL", "environment variable holding the explicit PostgreSQL URL")
+	db := fs.String("database-env", "", "required environment variable holding the explicit PostgreSQL URL")
 	id := fs.String("id", "", "immutable gate or book identifier")
 	return fs, db, id
 }

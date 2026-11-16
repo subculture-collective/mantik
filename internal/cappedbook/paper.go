@@ -148,7 +148,7 @@ func (c Client) submit(ctx context.Context, o account.BookOrder, marks map[strin
 		return response, err
 	}
 	if !matchesOrder(response, o) {
-		_, haltErr := c.append(ctx, account.BookCommand{ID: "halt-submission", Kind: "halt", At: o.At})
+		_, haltErr := c.halt(ctx, "submission", o.At, marks)
 		return response, errors.Join(errors.New("broker response differs from reserved order"), haltErr)
 	}
 	_, err = c.append(ctx, account.BookCommand{ID: "bind-" + o.ID, Kind: "bind", At: o.At, OrderID: o.ID, VenueOrderID: response.ID})
@@ -164,6 +164,14 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	if bookErr != nil {
 		return allocation.Distribution{}, bookErr
 	}
+	roster, rosterErr := account.PortfolioRoster(book)
+	if rosterErr != nil {
+		return allocation.Distribution{}, rosterErr
+	}
+	flat := map[string]bool{}
+	for _, t := range req.Targets {
+		flat[t.SleeveID] = allocation.FlatTarget(t.Decision)
+	}
 	reader, ok := c.Store.(interface {
 		StrategyGate(context.Context, string) (strategygate.Record, error)
 		StrategyTrialSearchTotal(context.Context, string) (int64, error)
@@ -173,6 +181,10 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	}
 	for i := range req.Sleeves {
 		s := &req.Sleeves[i]
+		if old, exists := roster[s.ID]; exists && flat[s.ID] && old.StrategyID == s.StrategyID {
+			*s = old
+			continue
+		}
 		if s.Stage == "qualified" {
 			return allocation.Distribution{}, errors.New("forward_qualification_required")
 		}
@@ -227,6 +239,27 @@ func matchesOrder(v alpaca.PaperOrder, o account.BookOrder) bool {
 	return v.ID != "" && v.ClientOrderID == o.ID && v.Symbol == o.Symbol && v.Side == o.Side && v.Type == "limit" && v.TimeInForce == "day" && sameDecimal(v.Qty, o.Quantity) && sameDecimal(v.LimitPrice, o.Limit)
 }
 
+// halt uses the current journal version as its identity, so a later discrepancy
+// can halt again after an explicit owner clear. Already-halted retries add none.
+func (c Client) halt(ctx context.Context, kind string, at time.Time, marks map[string]string) (account.CappedState, error) {
+	s, e := c.load(ctx)
+	if e != nil {
+		return s, e
+	}
+	if len(s.Events) > 0 && s.Events[len(s.Events)-1].At.After(at) {
+		at = s.Events[len(s.Events)-1].At
+	}
+	v, e := account.SnapshotCapped(s, marks, at)
+	if e != nil {
+		return s, e
+	}
+	if v.Halted {
+		return s, nil
+	}
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", kind, s.Version)))
+	return c.append(ctx, account.BookCommand{ID: "halt-" + kind + "-" + hex.EncodeToString(h[:16]), Kind: "halt", At: at})
+}
+
 func sameDecimal(a, b string) bool {
 	x, xok := new(big.Rat).SetString(a)
 	y, yok := new(big.Rat).SetString(b)
@@ -246,7 +279,7 @@ func (c Client) Sync(ctx context.Context, at time.Time, marks map[string]string)
 		return account.CappedSnapshot{}, err
 	}
 	fail := func(err error) (account.CappedSnapshot, error) {
-		_, haltErr := c.append(ctx, account.BookCommand{ID: "halt-reconciliation", Kind: "halt", At: at})
+		_, haltErr := c.halt(ctx, "reconciliation", at, marks)
 		return account.CappedSnapshot{}, errors.Join(err, haltErr)
 	}
 	orders := map[string]account.BookOrder{}
@@ -256,7 +289,7 @@ func (c Client) Sync(ctx context.Context, at time.Time, marks map[string]string)
 		if v.Kind == "reject" {
 			rejected[v.OrderID] = true
 		}
-		if v.Kind == "reserve" {
+		if v.Kind == "reserve" || v.Kind == "portfolio_reserve" {
 			orders[v.Order.ID] = *v.Order
 		}
 		if v.Kind == "bind" {

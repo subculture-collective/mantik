@@ -12,6 +12,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 )
 
 func gateFixture(t *testing.T) (*storage.Memory, strategygate.Declaration, []Candidate, engine.Config) {
@@ -34,6 +35,7 @@ func gateFixture(t *testing.T) (*storage.Memory, strategygate.Declaration, []Can
 	}
 	d := strategygate.Declaration{Account: "cash", ID: "gate", Family: "gate", ExperimentID: "gate-exp", StrategyID: sid, Spec: raw, BaseCandidate: "base", Balance: "2000", Policy: "backtest-gate-v1", Benchmark: "spy", Calendar: dates, Train: 20, Test: 20, Purge: 2, Embargo: 2, Cash: cash, SPY: spy, DataSHA256: strings.Repeat("a", 64), Coverage: false, Availability: false}
 	d.EngineVersion = engine.Version
+	d.SettlementCalendar = "us-equity-t1-v1"
 	d.Assets = []string{"SPY"}
 	d.BaseCost = []byte(`{"version":"base","fee_bps":"0","slippage_bps":"0"}`)
 	d.StressCost = []byte(`{"version":"stress","fee_bps":"1","slippage_bps":"5"}`)
@@ -42,10 +44,65 @@ func gateFixture(t *testing.T) (*storage.Memory, strategygate.Declaration, []Can
 		if e != nil {
 			t.Fatal(e)
 		}
-		d.Candidates = append(d.Candidates, strategygate.Variant{Name: c.Name, Spec: raw})
+		plan, e := json.Marshal(c.Minimum)
+		if e != nil {
+			t.Fatal(e)
+		}
+		d.Candidates = append(d.Candidates, strategygate.Variant{Name: c.Name, Spec: raw, Minimum: plan})
 	}
 	cfg := engine.Config{Account: account.Cash, Source: testSource{dates}, Assets: []string{"SPY"}, InitialCash: "2000", Cost: engine.CostModel{Version: "base", FeeBps: "0", SlippageBps: "0"}}
 	return storage.NewMemory(), d, cs, cfg
+}
+
+func TestGateFrozenPlansCalendarsAndMalformedAttempts(t *testing.T) {
+	for _, scenario := range []string{"minimum", "settlement", "malformed"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, d, cs, cfg := gateFixture(t)
+			d.Coverage, d.Availability = true, true
+			d.Benchmark = "cash"
+			for i := range d.SPY.Returns {
+				d.SPY.Returns[i].Return = "0"
+			}
+			ctx := context.Background()
+			if _, e := DeclareGate(ctx, s, d); e != nil {
+				t.Fatal(e)
+			}
+			trial := engine.Trial{ID: d.ExperimentID, Family: d.Family, DataSHA256: d.DataSHA256, EvidenceClass: "synthetic_fixture"}
+			if scenario == "malformed" {
+				_, e := s.StartStrategyTrial(ctx, strategytrial.Start{ID: d.ExperimentID + "-f0-base-train", Family: d.Family, StrategyID: d.StrategyID, Spec: d.Spec, Config: json.RawMessage(`{"assets":5}`), DataSHA256: d.DataSHA256, EvidenceClass: "synthetic_fixture", StartedAt: time.Now().UTC()})
+				if e != nil {
+					t.Fatal(e)
+				}
+			} else {
+				if scenario == "minimum" {
+					for i := range cs {
+						cs[i].Minimum.Requirements = []TradeRequirement{{Asset: "SPY", Quantity: "0.01", Price: "1", Fee: "0"}}
+					}
+				}
+				if scenario == "settlement" {
+					cfg.SettlementDate = func(day time.Time) time.Time { return account.SettlementDate(day).AddDate(0, 0, 10) }
+					trial.CalendarID = "unreviewed-plus-ten-days"
+				}
+				if _, e := WalkForward(ctx, s, cfg, d.Calendar, Design{d.Train, d.Test, d.Purge, d.Embargo}, engine.CostModel{Version: "stress", FeeBps: "1", SlippageBps: "5"}, cs, trial); e != nil {
+					t.Fatal(e)
+				}
+			}
+			r, e := EvaluateGate(ctx, s, d.ID)
+			if e != nil || r.Decision == nil || r.Decision.Status != "failed" {
+				t.Fatal("bad retained evidence did not yield a failed report", r, e)
+			}
+			code := map[string]string{"minimum": "/minimum_plan", "settlement": "/engine_settings", "malformed": "/config_integrity"}[scenario]
+			found := false
+			for _, c := range r.Decision.Checks {
+				if strings.HasSuffix(c.Code, code) && !c.Passed {
+					found = true
+				}
+			}
+			if !found || r.Decision.Minimum == "0.01" {
+				t.Fatal("declaration changed or failure hidden", r.Decision)
+			}
+		})
+	}
 }
 func TestGateRecordsEveryFailureAndDoesNotPassMissingTrials(t *testing.T) {
 	s, d, _, _ := gateFixture(t)

@@ -35,6 +35,7 @@ type CappedConfig struct {
 // BookOrder reserves a simple day limit order before any broker POST. Fee is
 // a conservative total fee reserve. Only these recorded client IDs own fills.
 type BookOrder struct {
+	ReduceOnly                             bool
 	ID, Symbol, Quantity, Limit, Side, Fee string
 	AllocationID, SleeveID, StrategyID     string
 	At                                     time.Time
@@ -84,6 +85,8 @@ type openOrder struct {
 	released    bool
 }
 type bookReplay struct {
+	sleeves      map[string]allocation.Sleeve
+	targets      map[string]allocation.TargetDecision
 	funds        *Book
 	positions    map[string]*big.Rat
 	orders       map[string]*openOrder
@@ -347,11 +350,22 @@ func replay(s CappedState) (*bookReplay, error) {
 			if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
 				return nil, e
 			}
+			if e := retainPortfolioRoster(r, *c.Rebalance); e != nil {
+				return nil, e
+			}
 			v, e := allocation.Distribute(*c.Rebalance, sizingSnapshot(r, c.Marks))
 			if e != nil {
 				return nil, e
 			}
 			r.distribution = &v
+			if r.targets == nil {
+				r.targets = map[string]allocation.TargetDecision{}
+			}
+			for _, t := range c.Rebalance.Targets {
+				if !t.Decision.KeepPositions {
+					r.targets[t.SleeveID] = t.Decision
+				}
+			}
 		case "reserve", "portfolio_reserve":
 			if r.halted && c.Kind == "reserve" || c.Order == nil {
 				return nil, errors.New("book halted or missing order")

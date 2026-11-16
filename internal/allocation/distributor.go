@@ -61,16 +61,33 @@ type SizingPosition struct{ SleeveID, Symbol, Quantity string }
 // SizingSnapshot comes from the local capped book. Pending sleeves wait for
 // reconciliation instead of repeatedly issuing a replacement target.
 type SizingSnapshot struct {
-	Equity         string
-	Positions      []SizingPosition
-	PendingSleeves []string
-	Marks          map[string]string
+	PreviousTargets map[string]TargetDecision
+	Equity          string
+	Positions       []SizingPosition
+	PendingSleeves  []string
+	Marks           map[string]string
 }
 
 // SizedOrder is the distributor's immutable fractional day-limit order.
 type SizedOrder struct {
+	ReduceOnly                                                                 bool
 	ID, AllocationID, SleeveID, StrategyID, Symbol, Quantity, Limit, Side, Fee string
 	At                                                                         time.Time
+}
+
+// FlatTarget is a complete, explicit exit target. A hold may later resize from
+// retained weights, so it cannot bypass an admission check as a no-op.
+func FlatTarget(d TargetDecision) bool {
+	if d.KeepPositions {
+		return false
+	}
+	for _, t := range d.Targets {
+		w, e := sizingRat(t.Weight)
+		if e != nil || w.Sign() != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // SleeveAllocation retains a budget or an explicit wait reason.
@@ -94,6 +111,18 @@ func Distribute(req RebalanceRequest, snap SizingSnapshot) (Distribution, error)
 	if err != nil || !sleeveName.MatchString(req.ID) || req.At.IsZero() || len(req.Sleeves) == 0 || len(req.Sleeves) > 64 || len(req.Targets) != len(req.Sleeves) || len(snap.Positions) > 256 {
 		return out, errors.New("invalid distribution")
 	}
+	req.Targets = slices.Clone(req.Targets)
+	for i, t := range req.Targets {
+		if t.Decision.KeepPositions && len(t.Decision.Targets) == 0 {
+			if prior, ok := snap.PreviousTargets[t.SleeveID]; ok {
+				req.Targets[i].Decision = prior
+			}
+		}
+	}
+	openingEquity := new(big.Rat).Set(e)
+	if openingEquity.Sign() < 0 {
+		openingEquity.SetInt64(0)
+	}
 	// Size from equity net of every possible fee in this rebalance. Otherwise a
 	// full 5% position would exceed its own cap as soon as its fee is charged.
 	for _, t := range req.Targets {
@@ -115,6 +144,23 @@ func Distribute(req RebalanceRequest, snap SizingSnapshot) (Distribution, error)
 				return out, errors.New("missing fee bound")
 			}
 			e.Sub(e, fee)
+			mark, me := sizingRat(snap.Marks[asset])
+			limit, le := sizingRat(req.Limits[asset])
+			if me != nil || le != nil || mark.Sign() <= 0 || limit.Sign() <= 0 {
+				return out, errors.New("missing positive execution bound")
+			}
+			units := new(big.Rat).Quo(new(big.Rat).Mul(openingEquity, big.NewRat(5, 100)), mark)
+			for _, p := range snap.Positions {
+				if p.SleeveID == t.SleeveID && p.Symbol == asset {
+					held, he := sizingRat(p.Quantity)
+					if he != nil {
+						return out, he
+					}
+					units.Add(units, new(big.Rat).Abs(held))
+				}
+			}
+			gap := new(big.Rat).Abs(new(big.Rat).Sub(limit, mark))
+			e.Sub(e, new(big.Rat).Mul(units, gap))
 		}
 	}
 	if e.Sign() < 0 {
@@ -254,7 +300,11 @@ func Distribute(req RebalanceRequest, snap SizingSnapshot) (Distribution, error)
 			if me != nil || le != nil || fe != nil || mark.Sign() <= 0 || limit.Sign() <= 0 || fee.Sign() < 0 {
 				return out, errors.New("missing positive mark/limit or fee bound")
 			}
-			qty := new(big.Rat).Quo(want[asset], mark)
+			priceBound := new(big.Rat).Set(mark)
+			if limit.Cmp(priceBound) > 0 {
+				priceBound.Set(limit)
+			}
+			qty := new(big.Rat).Quo(want[asset], priceBound)
 			if held[asset] != nil {
 				qty.Sub(qty, held[asset])
 			}
@@ -273,7 +323,11 @@ func Distribute(req RebalanceRequest, snap SizingSnapshot) (Distribution, error)
 				side = "sell"
 			}
 			identity := sha256.Sum256([]byte(req.ID + "/" + s.ID + "/" + asset))
-			out.Orders = append(out.Orders, SizedOrder{ID: "sized-" + hex.EncodeToString(identity[:16]), AllocationID: req.ID, SleeveID: s.ID, StrategyID: s.StrategyID, Symbol: asset, Quantity: new(big.Rat).Abs(qty).FloatString(9), Limit: req.Limits[asset], Side: side, Fee: req.Fees[asset], At: req.At.UTC()})
+			reducing := want[asset].Sign() == 0
+			if h := held[asset]; h != nil && h.Sign()*qty.Sign() < 0 && new(big.Rat).Abs(qty).Cmp(new(big.Rat).Abs(h)) <= 0 {
+				reducing = true
+			}
+			out.Orders = append(out.Orders, SizedOrder{ReduceOnly: reducing, ID: "sized-" + hex.EncodeToString(identity[:16]), AllocationID: req.ID, SleeveID: s.ID, StrategyID: s.StrategyID, Symbol: asset, Quantity: new(big.Rat).Abs(qty).FloatString(9), Limit: req.Limits[asset], Side: side, Fee: req.Fees[asset], At: req.At.UTC()})
 		}
 		out.Sleeves = append(out.Sleeves, a)
 	}

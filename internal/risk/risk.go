@@ -158,6 +158,7 @@ func ApplyControl(s State, c Control) (State, error) {
 // independent pending opening legs and all fees reserved. Reducing is true only
 // for a quantity that cannot cross zero, even if other pending reductions fill.
 type OrderView struct {
+	Incubation, ModelVersion                   string
 	StrategyID                                 string
 	Equity, CashAfter, Gross, Position, Sleeve string
 	Reducing                                   bool
@@ -171,7 +172,16 @@ func Check(s State, v OrderView) ([]string, error) {
 	g, ge := amount(v.Gross)
 	p, pe := amount(v.Position)
 	sl, se := amount(v.Sleeve)
-	if err != nil || ce != nil || ge != nil || pe != nil || se != nil || s.At.IsZero() {
+	pool, model := v.Incubation, v.ModelVersion
+	if pool == "" {
+		pool = "0"
+	}
+	if model == "" {
+		model = "0"
+	}
+	incubation, ie := amount(pool)
+	version, ve := amount(model)
+	if err != nil || ce != nil || ge != nil || pe != nil || se != nil || ie != nil || ve != nil || s.At.IsZero() {
 		return nil, errors.New("invalid risk order view")
 	}
 	if v.Reducing {
@@ -207,6 +217,12 @@ func Check(s State, v OrderView) ([]string, error) {
 	}
 	if c.Cmp(new(big.Rat).Mul(e, big.NewRat(20, 100))) < 0 {
 		reasons = append(reasons, "risk_cash_reserve")
+	}
+	if incubation.Cmp(new(big.Rat).Mul(e, big.NewRat(5, 100))) > 0 {
+		reasons = append(reasons, "risk_incubation_pool")
+	}
+	if version.Cmp(new(big.Rat).Mul(e, big.NewRat(1, 100))) > 0 {
+		reasons = append(reasons, "risk_model_version_limit")
 	}
 	return reasons, nil
 }

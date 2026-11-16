@@ -61,6 +61,9 @@ func validateGateDeclaration(d strategygate.Declaration) error {
 		return errors.New("gate requires the current engine and frozen base/stress costs")
 	}
 	assets := slices.Clone(d.Assets)
+	if d.SettlementCalendar != "us-equity-t1-v1" {
+		return errors.New("gate policy requires the default reviewed settlement calendar")
+	}
 	slices.Sort(assets)
 	if len(assets) == 0 || len(assets) > strategy.MaxAssets || len(slices.Compact(slices.Clone(assets))) != len(assets) {
 		return errors.New("gate requires distinct predeclared assets")
@@ -81,6 +84,21 @@ func validateGateDeclaration(d strategygate.Declaration) error {
 			return strategygate.ErrInvalid
 		}
 		seen[v.Name], identities[id] = true, true
+		var minimum TradeabilityPlan
+		if json.Unmarshal(v.Minimum, &minimum) != nil || minimum.StrategyID != id || minimum.MarksAt.After(time.Now()) {
+			return errors.New("gate variant requires its frozen minimum trade plan")
+		}
+		if _, e := Tradeability(minimum); e != nil {
+			return e
+		}
+		if string(minimum.Account) != d.Account {
+			return errors.New("minimum plan account differs from declaration")
+		}
+		for _, unit := range minimum.Requirements {
+			if !slices.Contains(assets, unit.Asset) {
+				return errors.New("minimum plan asset is not declared")
+			}
+		}
 		if v.Name == d.BaseCandidate {
 			if id != d.StrategyID {
 				return strategygate.ErrInvalid
@@ -177,6 +195,20 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 		return store.RecordStrategyGate(ctx, out)
 	}
 	check("source_coverage", d.Coverage, "reviewed_universe_and_price_coverage_required")
+	for _, v := range d.Candidates {
+		var plan TradeabilityPlan
+		if e = json.Unmarshal(v.Minimum, &plan); e != nil {
+			return r, e
+		}
+		check("minimum_plan_clock/"+v.Name, !plan.MarksAt.After(r.DeclaredAt), "minimum_trade_plan_must_be_known_when_gate_is_declared")
+		if v.Name == d.BaseCandidate {
+			minimum, e := Tradeability(plan)
+			if e != nil {
+				return r, e
+			}
+			out.Minimum = minimum.MinimumBalance
+		}
+	}
 	check("point_in_time", d.Availability, "historical_availability_evidence_required")
 	folds, _ := Folds(d.Calendar, Design{d.Train, d.Test, d.Purge, d.Embargo})
 	frozen := frozenFamily{Store: store, records: family}
@@ -203,14 +235,15 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 					continue
 				}
 				var cfg struct {
-					EngineVersion string `json:"engine_version"`
-					Account       string `json:"account"`
-					InitialCash   string `json:"initial_cash"`
-					Unlevered     bool
-					Deposits      json.RawMessage
-					Assets        []string
-					Cost          engine.CostModel `json:"cost"`
-					Experiment    struct {
+					EngineVersion      string `json:"engine_version"`
+					Account            string `json:"account"`
+					InitialCash        string `json:"initial_cash"`
+					SettlementCalendar string `json:"settlement_calendar"`
+					Unlevered          bool
+					Deposits           json.RawMessage
+					Assets             []string
+					Cost               engine.CostModel `json:"cost"`
+					Experiment         struct {
 						Version, Candidate, Role string
 						Fold                     int
 						Design                   Design
@@ -219,7 +252,8 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 					} `json:"experiment"`
 				}
 				if e = json.Unmarshal(v.Start.Config, &cfg); e != nil {
-					return r, e
+					check(code+"/config_integrity", false, "retained_engine_config_cannot_be_decoded")
+					continue
 				}
 				wantManifest := manifest(fold, d.Calendar)
 				identity := v.Start.StrategyID == wantedID && v.Start.DataSHA256 == d.DataSHA256 && !v.Start.StartedAt.Before(r.DeclaredAt) && !v.Start.StartedAt.After(out.At) && cfg.Experiment.Version == "walk-forward-v1" && cfg.Experiment.Candidate == variant.Name && cfg.Experiment.Role == role && cfg.Experiment.Fold == fi && cfg.Experiment.Design == (Design{d.Train, d.Test, d.Purge, d.Embargo}) && cfg.Experiment.Boundaries == wantManifest
@@ -238,8 +272,16 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 				declaredCostHash, _ := strategygate.Hash(declaredCost)
 				declaredAssets := slices.Clone(d.Assets)
 				slices.Sort(declaredAssets)
-				settings := cfg.EngineVersion == d.EngineVersion && cfg.Account == d.Account && cok && dok && capital.Cmp(declaredCapital) == 0 && cfg.Unlevered == d.Unlevered && (len(cfg.Deposits) == 0 || string(cfg.Deposits) == "null") && costHash == declaredCostHash && slices.Equal(cfg.Assets, declaredAssets)
+				settings := cfg.EngineVersion == d.EngineVersion && cfg.Account == d.Account && cok && dok && capital.Cmp(declaredCapital) == 0 && cfg.Unlevered == d.Unlevered && (len(cfg.Deposits) == 0 || string(cfg.Deposits) == "null") && costHash == declaredCostHash && slices.Equal(cfg.Assets, declaredAssets) && cfg.SettlementCalendar == d.SettlementCalendar
 				check(code+"/engine_settings", settings, "engine_account_capital_and_costs_must_match_declaration_without_extra_deposits")
+				var declaredPlan TradeabilityPlan
+				if e = json.Unmarshal(variant.Minimum, &declaredPlan); e != nil {
+					return r, e
+				}
+				declaredPlanHash, _ := strategygate.Hash(declaredPlan)
+				runPlanHash, _ := strategygate.Hash(cfg.Experiment.Minimum)
+				planMatches := declaredPlanHash == runPlanHash
+				check(code+"/minimum_plan", planMatches, "run_minimum_trade_plan_must_match_the_frozen_gate_declaration")
 				if role == "test" {
 					baseCosts[variant.Name] = cfg.Cost
 				}
@@ -247,7 +289,7 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 					base, ok := baseCosts[variant.Name]
 					check(code+"/harsher_cost", ok && HarsherCost(base, cfg.Cost), "each_cost_component_must_not_improve")
 				}
-				if !complete || !identity || !settings {
+				if !complete || !identity || !settings || !planMatches {
 					continue
 				}
 				wantDates := fold.Test
@@ -298,7 +340,6 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 					check(code+"/PBO", a.PBO.Value != nil && *a.PBO.Value <= .2, "CSCV_probability_at_most_0.20; "+a.PBO.Reason)
 				}
 				if a.Minimum != nil {
-					out.Minimum = a.Minimum.MinimumBalance
 					need, ok := decimal(out.Minimum)
 					balance, bok := decimal(d.Balance)
 					check(code+"/minimum", ok && bok && balance.Cmp(need) >= 0 && string(a.Minimum.Plan.Account) == d.Account, "current_book_and_account_must_fit_predeclared_trade_plan")

@@ -22,6 +22,8 @@ func TestEveryHardLimitHasAReasonAndAllowsOnlyReducingExits(t *testing.T) {
 		{"position", func(_ *State, v *OrderView) { v.Position = "100.000000001" }, "risk_position_limit"},
 		{"sleeve", func(_ *State, v *OrderView) { v.Sleeve = "400.01" }, "risk_sleeve_limit"},
 		{"reserve", func(_ *State, v *OrderView) { v.CashAfter = "399.99" }, "risk_cash_reserve"},
+		{"incubation", func(_ *State, v *OrderView) { v.Incubation = "100.01" }, "risk_incubation_pool"},
+		{"model", func(_ *State, v *OrderView) { v.ModelVersion = "20.01" }, "risk_model_version_limit"},
 		{"kill", func(s *State, _ *OrderView) { s.Kill = true }, "risk_kill_switch"},
 		{"halt", func(s *State, _ *OrderView) { s.Halted = true }, "risk_hard_halt"},
 		{"reduce", func(s *State, _ *OrderView) { s.ReduceOnly = true }, "risk_reduce_only"},

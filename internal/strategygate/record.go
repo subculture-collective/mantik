@@ -24,8 +24,9 @@ var (
 
 // Variant freezes one named strategy version before running the experiment.
 type Variant struct {
-	Name string
-	Spec json.RawMessage
+	Name    string
+	Spec    json.RawMessage
+	Minimum json.RawMessage
 }
 
 // Reference is a retained, dated benchmark declaration.
@@ -41,6 +42,7 @@ type ReferenceReturn struct{ Date, Return string }
 // and benchmark inputs before any attempt starts. Coverage and Availability are
 // trusted source-review assertions, not attestations inferred from a hash.
 type Declaration struct {
+	SettlementCalendar                                                                       string
 	EngineVersion, Account                                                                   string
 	BaseCost, StressCost                                                                     json.RawMessage
 	Unlevered                                                                                bool
