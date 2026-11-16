@@ -196,6 +196,10 @@ The [`stock-assets` and `stock-universe` commands](docs/reference/stock-universe
 
 Strategies can read [point-in-time indicative option chains](docs/reference/option-chains.md)
 with explicit same-session spot inputs and reference-tested European-model IV and Greeks.
+The [indicative option order simulator](docs/reference/option-structures.md) admits
+up-to-four-leg structures, holds maximum-loss and partial-fill reserves, enforces
+cash-book permissions and fixed Greek caps, and records conservative bar fills.
+It grants no qualified or broker submission authority.
 The pure [indicator adapter](docs/reference/indicators.md) provides SMA, EMA, RSI,
 Wilder ATR, Bollinger bands and rolling return volatility with maintained TA-Lib parity tests.
 
