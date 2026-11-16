@@ -23,6 +23,15 @@ func cappedContracts(t *testing.T, s CappedBookStore) {
 	if _, e = s.CreateCappedBook(ctx, cfg); e != nil {
 		t.Fatal(e)
 	}
+	clockCfg := account.DefaultCappedConfig("clock-book", "clock-account", account.Cash, time.Now())
+	clockState, err := s.CreateCappedBook(ctx, clockCfg)
+	if err != nil {
+		t.Fatal("ordinary Go clock failed creation round trip", err)
+	}
+	clockCfg.OpenedAt = clockCfg.OpenedAt.In(time.FixedZone("same-instant", -6*60*60))
+	if again, err := s.CreateCappedBook(ctx, clockCfg); err != nil || !again.Config.OpenedAt.Equal(clockState.Config.OpenedAt) {
+		t.Fatal("same opening instant conflicted after timezone/monotonic normalization", again, err)
+	}
 	bad := cfg
 	bad.OpeningCash = "100000"
 	if _, e = s.CreateCappedBook(ctx, bad); !errors.Is(e, account.ErrBookConflict) {

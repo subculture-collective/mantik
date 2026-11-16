@@ -35,6 +35,7 @@ func (m *Memory) CreateCappedBook(ctx context.Context, c account.CappedConfig) (
 		return account.CappedState{}, e
 	}
 	s, e := account.NewCappedState(c)
+	c = s.Config
 	if e != nil {
 		return s, e
 	}
@@ -97,6 +98,7 @@ func (m *Memory) ApplyCappedBook(ctx context.Context, id string, version int64, 
 // CreateCappedBook creates an immutable, restart-safe capped paper book.
 func (p *Postgres) CreateCappedBook(ctx context.Context, c account.CappedConfig) (account.CappedState, error) {
 	s, e := account.NewCappedState(c)
+	c = s.Config
 	if e != nil {
 		return s, e
 	}

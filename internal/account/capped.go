@@ -104,6 +104,7 @@ func (c CappedConfig) validate() error {
 
 // NewCappedState creates the declared book without issuing orders or funding the venue.
 func NewCappedState(c CappedConfig) (CappedState, error) {
+	c.OpenedAt = c.OpenedAt.UTC()
 	if e := c.validate(); e != nil {
 		return CappedState{}, e
 	}
