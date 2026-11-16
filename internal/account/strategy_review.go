@@ -561,6 +561,14 @@ func reviewSizing(s CappedState, c BookCommand, r *bookReplay) (allocation.Rebal
 			}
 		}
 	}
+	for _, e := range s.Events {
+		if e.ID == c.ID {
+			break
+		}
+		if e.Qualification != nil && e.Qualification.Status == "passed" && accountQualificationDemoted(s, e.Qualification.SleeveID, cutoff) {
+			snap.BudgetScales[e.Qualification.SleeveID] = "0"
+		}
+	}
 	// A retained review declaration enables this policy for its sleeve. Legacy
 	// journals have no declaration and must keep their original pause sizing.
 	managed := map[string]bool{}
@@ -595,11 +603,30 @@ func reviewSizing(s CappedState, c BookCommand, r *bookReplay) (allocation.Rebal
 // ReviewExitRequired lets the runner make an explicit same-owner flat decision
 // before evaluating a retired strategy, preserving stale-gate exit admission.
 func ReviewExitRequired(s CappedState, sleeve, sid string, decidedAt time.Time) bool {
+	if accountQualificationDemoted(s, sleeve, decidedAt) {
+		return true
+	}
 	for _, e := range s.Events {
 		if e.RiskControl != nil && e.RiskControl.Action == "retire_strategy" && e.RiskControl.StrategyID == sid {
 			return true
 		}
 		if e.Review != nil && e.Review.SleeveID == sleeve && e.Review.StrategyID == sid && e.Review.Action == "retire" && e.At.Before(decidedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func accountQualificationDemoted(s CappedState, sleeve string, at time.Time) bool {
+	promoted := false
+	for _, e := range s.Events {
+		if !e.At.Before(at) {
+			continue
+		}
+		if e.Qualification != nil && e.Qualification.SleeveID == sleeve && e.Qualification.Status == "passed" {
+			promoted = true
+		}
+		if promoted && e.Review != nil && e.Review.SleeveID == sleeve && (e.Review.Action == "demote" || e.Review.Action == "retire") {
 			return true
 		}
 	}

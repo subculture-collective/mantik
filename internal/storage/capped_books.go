@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
+	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -75,6 +76,9 @@ func (m *Memory) CappedBook(ctx context.Context, id string) (account.CappedState
 
 // ApplyCappedBook atomically validates and appends one event at an expected version.
 func (m *Memory) ApplyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
+	if c.Kind == "qualification" || c.Qualification != nil {
+		return account.CappedState{}, forward.ErrInvalid
+	}
 	if e := ctx.Err(); e != nil {
 		return account.CappedState{}, e
 	}
@@ -209,6 +213,9 @@ func (p *Postgres) CappedBook(ctx context.Context, id string) (account.CappedSta
 // ApplyCappedBook locks one book for a command, so independent workers cannot
 // reserve the same local capital. The existing adapter still fences the POST.
 func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand) (account.CappedState, error) {
+	if c.Kind == "qualification" || c.Qualification != nil {
+		return account.CappedState{}, forward.ErrInvalid
+	}
 	tx, e := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if e != nil {
 		return account.CappedState{}, e

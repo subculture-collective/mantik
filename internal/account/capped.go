@@ -11,6 +11,7 @@ import (
 	_ "time/tzdata"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/allocation"
+	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
 )
 
@@ -52,6 +53,7 @@ type BookFill struct {
 // BookCommand is one ordered journal event. At is the local application clock;
 // fills and deposits keep their original economic clocks in separate fields.
 type BookCommand struct {
+	Qualification                           *forward.Assessment `json:",omitempty"`
 	ID, Kind, OrderID, VenueOrderID, Amount string
 	At, EffectiveAt                         time.Time
 	Order                                   *BookOrder
@@ -305,7 +307,7 @@ func replay(s CappedState) (*bookReplay, error) {
 	last := s.Config.OpenedAt
 	financialEvents := []BookCommand{}
 	for _, c := range s.Events {
-		if c.RiskCheckpoint != nil && c.Kind != "risk_checkpoint" || c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
+		if c.RiskCheckpoint != nil && c.Kind != "risk_checkpoint" || c.Qualification != nil && c.Kind != "qualification" || c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && !IsStrategyPlan(c) || c.ModelFill != nil && c.Kind != "fill" {
 			return nil, errors.New("book payload differs from event kind")
 		}
 		if c.ID == "" || len(c.ID) > 128 || ids[c.ID] || c.At.Before(last) || c.At.IsZero() {
@@ -370,7 +372,11 @@ func replay(s CappedState) (*bookReplay, error) {
 			if e := replayStrategyReview(s, c, r); e != nil {
 				return nil, e
 			}
-		case "incubation_plan":
+		case "qualification":
+			if e := replayQualification(s, c, r); e != nil {
+				return nil, e
+			}
+		case "incubation_plan", "qualification_plan":
 			if e := validateIncubationPlan(s, c); e != nil {
 				return nil, e
 			}
@@ -503,7 +509,7 @@ func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
 	if c.Kind == "risk_checkpoint" || c.RiskCheckpoint != nil {
 		return s, errors.New("risk checkpoint is not a command")
 	}
-	if c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
+	if c.Qualification != nil && c.Kind != "qualification" || c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && !IsStrategyPlan(c) || c.ModelFill != nil && c.Kind != "fill" {
 		return s, errors.New("book payload differs from event kind")
 	}
 	raw, e := json.Marshal(s)

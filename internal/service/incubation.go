@@ -51,6 +51,7 @@ type IncubatingStrategy struct {
 // Retrying an ID recovers the recorded decisions without invoking strategies.
 type IncubationRequest struct {
 	ID, InputSHA256 string
+	Qualification   *forward.Collection
 	Calendar        *IncubationCalendar
 	// Protective flattens only retained owners, without invoking strategy code.
 	Protective           bool
@@ -97,12 +98,22 @@ func incubationMarks(quotes map[string]account.IncubationQuote) map[string]strin
 // recovered by GET only; a crash or ambiguous POST can never cause another POST.
 // A later invocation needs a fresh cycle ID and quote clock.
 func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (IncubationResult, error) {
+	if req.Qualification != nil && (req.Protective || len(req.Qualification.DecisionSources) != 0) {
+		return IncubationResult{}, forward.ErrInvalid
+	}
+	kind := "incubation_plan"
+	if req.Qualification != nil {
+		kind = "qualification_plan"
+	}
 	out := IncubationResult{Orders: []alpaca.PaperOrder{}}
 	if !incubationCycleID.MatchString(req.ID) {
 		return out, errors.New("invalid incubation cycle ID")
 	}
 	if r.Store == nil || r.Broker == nil {
 		return out, errors.New("incubation requires store and paper broker")
+	}
+	if e := r.validateQualificationRequest(ctx, req); e != nil {
+		return out, e
 	}
 	state, e := r.Store.CappedBook(ctx, r.BookID)
 	if e != nil {
@@ -117,7 +128,10 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 	var cycleErrors []error
 	for _, event := range state.Events {
 		if event.ID == req.ID {
-			if event.Kind != "incubation_plan" || event.Incubation == nil || event.Incubation.InputSHA256 != req.InputSHA256 || !event.Incubation.DecidedAt.Equal(req.DecidedAt) || !event.At.Equal(req.ExecuteAt) || !reflect.DeepEqual(event.Incubation.Quotes, req.Quotes) || !reflect.DeepEqual(event.Incubation.Rebalance.Limits, req.Limits) || !reflect.DeepEqual(event.Incubation.Rebalance.Fees, req.Fees) {
+			if event.Kind != kind || event.Incubation == nil || event.Incubation.InputSHA256 != req.InputSHA256 || !event.Incubation.DecidedAt.Equal(req.DecidedAt) || !event.At.Equal(req.ExecuteAt) || !reflect.DeepEqual(event.Incubation.Quotes, req.Quotes) || !reflect.DeepEqual(event.Incubation.Rebalance.Limits, req.Limits) || !reflect.DeepEqual(event.Incubation.Rebalance.Fees, req.Fees) {
+				return out, account.ErrBookConflict
+			}
+			if req.Qualification != nil && (event.Incubation.Qualification == nil || event.Incubation.Qualification.PlanID != req.Qualification.PlanID || !reflect.DeepEqual(event.Incubation.Qualification.Benchmark, req.Qualification.Benchmark)) {
 				return out, account.ErrBookConflict
 			}
 			plan = event.Incubation
@@ -150,7 +164,7 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			}
 			health := r.admission(ctx, state, now, healthCheck(false, "protective_cycle_no_strategy_data", now), nil, incubationMarks(req.Quotes))
 			p.Health, out.Admission = &health, health
-			state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: req.ID, Kind: "incubation_plan", At: req.ExecuteAt, Incubation: &p})
+			state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: req.ID, Kind: kind, At: req.ExecuteAt, Incubation: &p})
 			if e != nil {
 				return out, e
 			}
@@ -170,7 +184,7 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 					bindings[s.SleeveID] = id
 				}
 			}
-			p := account.IncubationPlan{ForwardDeclarations: bindings, Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}
+			p := account.IncubationPlan{Qualification: req.Qualification, ForwardDeclarations: bindings, Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}
 			roster, err := account.PortfolioRoster(state)
 			if err != nil {
 				return out, err
@@ -214,7 +228,14 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				if err != nil && !pending {
 					return out, err
 				}
-				if pending || n != g.Decision.SearchTotal {
+				expectedTotal := g.Decision.SearchTotal
+				if roster[s.SleeveID].Stage == "qualified" {
+					expectedTotal = -1
+					if q := account.Qualification(state, s.SleeveID); q != nil {
+						expectedTotal = q.SearchTotal
+					}
+				}
+				if pending || n != expectedTotal {
 					owner, retained := roster[s.SleeveID]
 					if !retained || owner.StrategyID != sid || owner.GateID != s.GateID {
 						if pending {
@@ -258,6 +279,9 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				if g.Decision.Status == "forward_only" {
 					stage = "forward_only"
 				}
+				if owner, ok := roster[s.SleeveID]; ok && owner.Stage == "qualified" {
+					stage = "qualified"
+				}
 				book, err := incubationStrategyBook(state, s.SleeveID, g.Decision.StrategyID, req.DecidedAt)
 				if err != nil {
 					return out, err
@@ -265,7 +289,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				var d strategy.Decision
 				holdExposure := false
 				controlled := false
-				if id := bindings[s.SleeveID]; id != "" {
+				if stage == "qualified" && stale[i] {
+					controlled = true
+					d.State = book.State
+				}
+				if id := bindings[s.SleeveID]; id != "" && stage != "qualified" {
 					fs, ok := r.Store.(forward.Store)
 					if !ok {
 						return out, errors.New("forward declaration storage unavailable")
@@ -332,7 +360,7 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				if stale[i] && !flat {
 					return out, errors.New("gate_search_history_changed")
 				}
-				sleeve := allocation.Sleeve{ID: s.SleeveID, StrategyID: g.Decision.StrategyID, Stage: stage, ModelDriven: stage == "forward_only", GateID: s.GateID, Risk: s.Risk, Minimum: g.Decision.Minimum}
+				sleeve := allocation.Sleeve{ID: s.SleeveID, StrategyID: g.Decision.StrategyID, Stage: stage, ModelDriven: s.Strategy.Spec().ModelDriven, GateID: s.GateID, Risk: s.Risk, Minimum: g.Decision.Minimum}
 				if owner, retained := roster[s.SleeveID]; retained && flat && owner.StrategyID == sleeve.StrategyID && owner.GateID == sleeve.GateID {
 					sleeve = owner
 				}
@@ -340,13 +368,16 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				p.Rebalance.Targets = append(p.Rebalance.Targets, allocation.SleeveTarget{SleeveID: s.SleeveID, Decision: target})
 				p.Decisions = append(p.Decisions, account.IncubationDecision{SleeveID: s.SleeveID, StrategyID: g.Decision.StrategyID, State: d.State})
 			}
+			if err := retainQualificationViews(&p, views); err != nil {
+				return out, err
+			}
 			data := dailyAdmission(req.Calendar, views, req, now)
 			health := r.admission(ctx, state, now, data, rec, incubationMarks(req.Quotes))
 			p.Health = &health
 			out.Admission = health
 			// Due flows precede the plan; the decision must not see execution-time flows.
 			// Fund's receipt clock is execution time, so record the plan first.
-			state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: req.ID, Kind: "incubation_plan", At: req.ExecuteAt, Incubation: &p})
+			state, e = r.Store.ApplyCappedBook(ctx, r.BookID, state.Version, account.BookCommand{ID: req.ID, Kind: kind, At: req.ExecuteAt, Incubation: &p})
 			if e != nil {
 				return out, e
 			}
@@ -454,7 +485,7 @@ func incubationStrategyBook(s account.CappedState, sleeve, sid string, at time.T
 		if e.At.After(at) {
 			return out, errors.New("strategy book contains future receipt")
 		}
-		if e.Kind == "incubation_plan" && e.Incubation != nil {
+		if account.IsStrategyPlan(e) && e.Incubation != nil {
 			for _, d := range e.Incubation.Decisions {
 				if d.SleeveID == sleeve {
 					if d.StrategyID != sid {

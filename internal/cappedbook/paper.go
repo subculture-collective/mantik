@@ -188,7 +188,11 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 			continue
 		}
 		if s.Stage == "qualified" {
-			return allocation.Distribution{}, errors.New("forward_qualification_required")
+			q := account.Qualification(book, s.ID)
+			if q == nil || q.StrategyID != s.StrategyID {
+				return allocation.Distribution{}, errors.New("forward_qualification_required")
+			}
+			continue
 		}
 		g, e := reader.StrategyGate(ctx, s.GateID)
 		if e != nil {
@@ -249,7 +253,7 @@ func retainedRebalance(book account.CappedState, req allocation.RebalanceRequest
 				continue
 			}
 			old := event.Rebalance.Sleeves[j]
-			if s.ID != old.ID || s.StrategyID != old.StrategyID || s.GateID != old.GateID || s.Stage == "qualified" {
+			if s.ID != old.ID || s.StrategyID != old.StrategyID || s.GateID != old.GateID || s.Stage == "qualified" && old.Stage != "qualified" {
 				return allocation.Distribution{}, true, account.ErrBookConflict
 			}
 			s.Minimum, s.Stage, s.ModelDriven = old.Minimum, old.Stage, old.ModelDriven
@@ -456,6 +460,9 @@ func (c Client) SyncState(ctx context.Context, at time.Time, marks map[string]st
 			continue
 		}
 		if v.Fee == "" {
+			if qualificationOrder(s, id) {
+				return fail(errors.New("qualification venue activity has no observed commission"))
+			}
 			v.Fee = "0"
 		}
 		sum := sha256.Sum256(raw)
@@ -560,4 +567,19 @@ func (c Client) SyncState(ctx context.Context, at time.Time, marks map[string]st
 		return account.CappedState{}, account.ErrBookConflict
 	}
 	return s, nil
+}
+
+func qualificationOrder(s account.CappedState, id string) bool {
+	allocationID := ""
+	for _, e := range s.Events {
+		if e.Order != nil && e.Order.ID == id {
+			allocationID = e.Order.AllocationID
+		}
+	}
+	for _, e := range s.Events {
+		if e.Kind == "qualification_plan" && e.Incubation != nil && e.Incubation.Rebalance.ID == allocationID {
+			return true
+		}
+	}
+	return false
 }

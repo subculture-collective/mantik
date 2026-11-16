@@ -26,6 +26,7 @@ import (
 // incubationInput is a reviewed, bounded input manifest, never generated model
 // authority. Bars/actions keep their original knowledge and observation clocks.
 type incubationInput struct {
+	Qualification        *forward.Collection `json:",omitempty"`
 	Config               *account.CappedConfig
 	Calendar             *service.IncubationCalendar `json:",omitempty"`
 	Protective           bool                        `json:",omitempty"`
@@ -91,7 +92,7 @@ func incubationRequestFromJournal(ctx context.Context, in incubationInput, journ
 	if e != nil {
 		return service.IncubationRequest{}, e
 	}
-	req := service.IncubationRequest{ID: in.ID, InputSHA256: hash, DecidedAt: in.DecidedAt, ExecuteAt: in.ExecuteAt, Quotes: in.Quotes, Limits: in.Limits, Fees: in.Fees, Calendar: in.Calendar, Protective: in.Protective}
+	req := service.IncubationRequest{Qualification: in.Qualification, ID: in.ID, InputSHA256: hash, DecidedAt: in.DecidedAt, ExecuteAt: in.ExecuteAt, Quotes: in.Quotes, Limits: in.Limits, Fees: in.Fees, Calendar: in.Calendar, Protective: in.Protective}
 	if in.Protective {
 		return req, nil
 	}

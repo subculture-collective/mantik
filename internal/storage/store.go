@@ -119,6 +119,7 @@ type Memory struct {
 	externalOutputs             map[string]map[string]string
 	externalJobs                map[string]workertrial.Record
 	externalInputs              map[string]map[string][]byte
+	forwardAssessmentPlans      map[string]forward.AssessmentPlanRecord
 	forwardDeclarations         map[string]forward.Record
 	strategyTrials              map[string]strategytrial.Record
 	strategyBatches             map[string]strategytrial.Batch

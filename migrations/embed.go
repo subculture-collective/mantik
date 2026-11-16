@@ -405,3 +405,8 @@ var StrategyTrialBatches string
 //
 //go:embed 0126_capped_book_history.sql
 var CappedBookHistory string
+
+// ForwardAssessmentPlans freezes pre-window purged holdout policies.
+//
+//go:embed 0127_forward_assessment_plans.sql
+var ForwardAssessmentPlans string

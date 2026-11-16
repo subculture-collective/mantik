@@ -90,7 +90,9 @@ The fixed thresholds are a conservative operational policy, not a statistical
 qualification or a profitability claim. Grow restores previously cut capacity;
 its maximum is the existing admitted-stage budget. Quarantine demotion leaves
 the immutable admitted stage and ownership intact and reduces its capacity.
-Automatic qualification assessment and promotion remain issue #92.
+The [prospective assessor](forward-assessments.md) implements automatic paper
+qualification. A later overseer demotion invalidates that grant and gives its
+subsequent allocations a zero budget until a separate qualification window.
 `ResearchRequested` records an inactive request to inspect the cited evidence.
 It does not invoke the research desk, activate a model, or grant sizing,
 execution or owner-control authority.

@@ -19,7 +19,7 @@ import (
 )
 
 // expectedSchemaVersion tracks the complete registered migration chain.
-const expectedSchemaVersion = 126
+const expectedSchemaVersion = 127
 
 type timerBackend interface {
 	Store

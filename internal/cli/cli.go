@@ -31,6 +31,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) > 0 && args[0] == "model-analyst" {
 		return runModelAnalyst(ctx, args[1:], out, errOut)
 	}
+	if len(args) > 0 && args[0] == "forward-assessment" {
+		return runForwardAssessment(ctx, args[1:], out, errOut)
+	}
 	if len(args) > 0 && args[0] == "forward-declaration" {
 		return runForwardDeclaration(ctx, args[1:], out, errOut)
 	}
