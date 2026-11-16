@@ -253,3 +253,26 @@ func TestRateLimitBackoffSurvivesUTCDayReset(t *testing.T) {
 		t.Fatal("new-day budget not enforced", err)
 	}
 }
+
+func TestDeskSubscriptionPinsModelAndDisablesNativeTools(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.run = func(_ context.Context, name, prompt string, args ...string) ([]byte, error) {
+		got := strings.Join(args, " ")
+		for _, required := range []string{"--model gpt-6.1-sol", "mcp_servers={}", `web_search="disabled"`, "--disable shell_tool", "--disable unified_exec", "--disable multi_agent", "--disable apps", "--disable browser_use", "--disable computer_use", "--enable skip_host_skill_discovery"} {
+			if !strings.Contains(got, required) {
+				t.Fatalf("missing restriction %s", required)
+			}
+		}
+		return []byte(`{"tool":"done"}`), nil
+	}
+	r, err := j.Call(context.Background(), Call{Provider: Codex, Model: "gpt-6.1-sol", RestrictedTools: true, Prompt: "desk", Timeout: time.Second}, 1)
+	if err != nil || r.Model != "gpt-6.1-sol" {
+		t.Fatal(r, err)
+	}
+	if _, err = j.Call(context.Background(), Call{Provider: Codex, Model: "--bad", Prompt: "desk", Timeout: time.Second}, 1); err == nil {
+		t.Fatal("model argument injection accepted")
+	}
+}

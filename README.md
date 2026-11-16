@@ -67,6 +67,9 @@ quotes and zero fees or slippage.
   next-day forecasts and report Brier scores and buckets after final settlement.
   [Calibrated maker decisions](docs/reference/kalshi-maker.md) place fee-aware,
   quarter-Kelly post-only intents within the separate notional book.
+- **Advisory research desk**: [bounded model tools](docs/reference/research-desk.md)
+  compose inactive typed ideas, retain every attempted spec, and run post-cutoff
+  simulations without gate or trading authority.
 - **Subscription research calls**: the [model adapter](docs/reference/subscription-models.md)
   runs bounded Claude and Codex prompts using host logins, with a durable daily
   call budget and hash records, independently of trading.
