@@ -60,7 +60,9 @@ quotes and zero fees or slippage.
   exposure, cash, loss and emergency-control checks before submission.
   The opt-in [incubation runner](docs/reference/incubation.md) runs eligible
   strategies on retained prospective quotes and reports the worse venue/model
-  fill result, with no qualification credit.
+  fill result, with no qualification credit. It preserves explicit flat exits
+  for retained owners with stale research and rechecks quote expiry immediately
+  before the paper adapter's order POST.
 - **Kalshi data**: [public collection](docs/reference/kalshi-data.md) retains
   weather-market rules and order-book observations for point-in-time reads.
   [Weather probabilities](docs/reference/kalshi-weather.md) retain pre-close

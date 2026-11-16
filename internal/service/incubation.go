@@ -100,7 +100,7 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 	var plan *account.IncubationPlan
 	for _, event := range state.Events {
 		if event.ID == req.ID {
-			if event.Incubation == nil || event.Incubation.InputSHA256 != req.InputSHA256 || !event.Incubation.DecidedAt.Equal(req.DecidedAt) || !event.At.Equal(req.ExecuteAt) || !reflect.DeepEqual(event.Incubation.Quotes, req.Quotes) || !reflect.DeepEqual(event.Incubation.Rebalance.Limits, req.Limits) || !reflect.DeepEqual(event.Incubation.Rebalance.Fees, req.Fees) {
+			if event.Kind != "incubation_plan" || event.Incubation == nil || event.Incubation.InputSHA256 != req.InputSHA256 || !event.Incubation.DecidedAt.Equal(req.DecidedAt) || !event.At.Equal(req.ExecuteAt) || !reflect.DeepEqual(event.Incubation.Quotes, req.Quotes) || !reflect.DeepEqual(event.Incubation.Rebalance.Limits, req.Limits) || !reflect.DeepEqual(event.Incubation.Rebalance.Fees, req.Fees) {
 				return out, account.ErrBookConflict
 			}
 			plan = event.Incubation
@@ -127,9 +127,15 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			}
 		}
 		p := account.IncubationPlan{Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}
-		// Check the whole roster before invoking any strategy. The store repeats
-		// admission/family freshness atomically when retaining this plan and orders.
+		roster, err := account.PortfolioRoster(state)
+		if err != nil {
+			return out, err
+		}
+		// Check new admissions before invoking strategies. A stale retained owner
+		// may decide only an explicit flat exit; the store repeats this exception
+		// and freshness atomically when retaining the plan and orders.
 		gates := make([]strategygate.Record, len(req.Strategies))
+		stale := make([]bool, len(req.Strategies))
 		seen := map[string]bool{}
 		versions := map[string]bool{}
 		for i, s := range req.Strategies {
@@ -164,7 +170,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				return out, err
 			}
 			if n != g.Decision.SearchTotal {
-				return out, errors.New("gate_search_history_changed")
+				owner, retained := roster[s.SleeveID]
+				if !retained || owner.StrategyID != sid || owner.GateID != s.GateID {
+					return out, errors.New("gate_search_history_changed")
+				}
+				stale[i] = true
 			}
 			gates[i] = g
 		}
@@ -198,7 +208,15 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				}
 				target.Targets = append(target.Targets, allocation.WeightTarget{Asset: t.Asset, Weight: t.Weight})
 			}
-			p.Rebalance.Sleeves = append(p.Rebalance.Sleeves, allocation.Sleeve{ID: s.SleeveID, StrategyID: g.Decision.StrategyID, Stage: stage, ModelDriven: stage == "forward_only", GateID: s.GateID, Risk: s.Risk, Minimum: g.Decision.Minimum})
+			flat := allocation.FlatTarget(target)
+			if stale[i] && !flat {
+				return out, errors.New("gate_search_history_changed")
+			}
+			sleeve := allocation.Sleeve{ID: s.SleeveID, StrategyID: g.Decision.StrategyID, Stage: stage, ModelDriven: stage == "forward_only", GateID: s.GateID, Risk: s.Risk, Minimum: g.Decision.Minimum}
+			if owner, retained := roster[s.SleeveID]; retained && flat && owner.StrategyID == sleeve.StrategyID && owner.GateID == sleeve.GateID {
+				sleeve = owner
+			}
+			p.Rebalance.Sleeves = append(p.Rebalance.Sleeves, sleeve)
 			p.Rebalance.Targets = append(p.Rebalance.Targets, allocation.SleeveTarget{SleeveID: s.SleeveID, Decision: target})
 			p.Decisions = append(p.Decisions, account.IncubationDecision{SleeveID: s.SleeveID, StrategyID: g.Decision.StrategyID, State: d.State})
 		}
@@ -307,7 +325,7 @@ func incubationStrategyBook(s account.CappedState, sleeve, sid string, at time.T
 		if e.At.After(at) {
 			return out, errors.New("strategy book contains future receipt")
 		}
-		if e.Incubation != nil {
+		if e.Kind == "incubation_plan" && e.Incubation != nil {
 			for _, d := range e.Incubation.Decisions {
 				if d.SleeveID == sleeve {
 					if d.StrategyID != sid {
@@ -375,19 +393,32 @@ type incubationSubmissionBroker struct {
 }
 
 func (b incubationSubmissionBroker) Submit(ctx context.Context, o alpaca.StockOrder) (alpaca.PaperOrder, error) {
+	check := func() error { return b.checkSubmission(o) }
+	if broker, ok := b.Broker.(interface {
+		SubmitChecked(context.Context, alpaca.StockOrder, func() error) (alpaca.PaperOrder, error)
+	}); ok {
+		return broker.SubmitChecked(ctx, o, check)
+	}
+	if err := check(); err != nil {
+		return alpaca.PaperOrder{}, err
+	}
+	return b.Broker.Submit(ctx, o)
+}
+
+func (b incubationSubmissionBroker) checkSubmission(o alpaca.StockOrder) error {
 	at := time.Now().UTC()
 	if b.now != nil {
 		at = b.now()
 	}
 	if at.Before(b.plan.Rebalance.At) || at.Sub(b.plan.Rebalance.At) > time.Minute {
-		return alpaca.PaperOrder{}, errors.New("incubation quote expired before submission")
+		return errors.New("incubation quote expired before submission")
 	}
 	q, ok := b.plan.Quotes[o.Symbol]
 	if !ok {
-		return alpaca.PaperOrder{}, errors.New("incubation quote missing before submission")
+		return errors.New("incubation quote missing before submission")
 	}
 	if e := account.ValidateIncubationQuote(q, b.plan.DecidedAt, at); e != nil {
-		return alpaca.PaperOrder{}, e
+		return e
 	}
-	return b.Broker.Submit(ctx, o)
+	return nil
 }

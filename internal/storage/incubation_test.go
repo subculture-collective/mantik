@@ -34,6 +34,18 @@ func incubationJournalContract(t *testing.T, s CappedBookStore) {
 	plan := account.IncubationPlan{InputSHA256: strings.Repeat("c", 64), DecidedAt: decision, Rebalance: req, Costs: map[string]executioncost.Model{"model": executioncost.Default()}, Decisions: []account.IncubationDecision{{SleeveID: "model", StrategyID: sid, State: []byte("retained")}}, Quotes: map[string]account.IncubationQuote{"SPY": {Symbol: "SPY", Bid: "99.99", Ask: "100.01", BidQuantity: "100", AskQuantity: "100", OccurredAt: execution, ReceivedAt: execution, EvidenceClass: "prospective_market_unqualified", SourceSHA256: strings.Repeat("d", 64)}}}
 	// Contract-only admission fixture, never real observation/qualification proof.
 	command := account.BookCommand{ID: "cycle", Kind: "incubation_plan", At: execution, Incubation: &plan}
+	for _, c := range []account.BookCommand{
+		{ID: "forged-plan", Kind: "risk_observe", At: execution, Incubation: &plan},
+		{ID: "forged-model", Kind: "risk_observe", At: execution, ModelFill: &account.IncubationFill{CostPenalty: "-1000"}},
+	} {
+		if _, e = s.ApplyCappedBook(ctx, state.Config.ID, state.Version, c); e == nil {
+			t.Fatal("unrelated command retained incubation payload", c.ID)
+		}
+	}
+	unchanged, e := s.CappedBook(ctx, state.Config.ID)
+	if e != nil || unchanged.Version != state.Version {
+		t.Fatal("refused payload changed journal", unchanged, e)
+	}
 	badPlan := plan
 	badCost := executioncost.Default()
 	badCost.FeeBps = "100"

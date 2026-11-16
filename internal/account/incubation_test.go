@@ -84,7 +84,7 @@ func TestIncubationGateCostFeeIsIncluded(t *testing.T) {
 	at := time.Now().UTC()
 	o := BookOrder{ID: "order", AllocationID: "a", SleeveID: "s", Symbol: "SPY", Quantity: "0.5", Limit: "101", Side: "buy", At: at}
 	p := IncubationPlan{Rebalance: allocation.RebalanceRequest{ID: "a"}, Quotes: map[string]IncubationQuote{"SPY": {Ask: "100", AskQuantity: "1", SourceSHA256: strings.Repeat("a", 64)}}, Costs: map[string]executioncost.Model{"s": {Version: "fee-v1", FeeBps: "10", SlippageBps: "0"}}}
-	state := CappedState{Events: []BookCommand{{Incubation: &p}, {Kind: "portfolio_reserve", Order: &o}}}
+	state := CappedState{Events: []BookCommand{{Kind: "incubation_plan", Incubation: &p}, {Kind: "portfolio_reserve", Order: &o}}}
 	f := BookFill{OrderID: o.ID, Symbol: o.Symbol, Side: o.Side, Quantity: o.Quantity, Price: "100", Fee: "0", At: at}
 	model, e := ModelIncubationFill(state, f)
 	if e != nil || model.ModelFee != "0.050000000000" || model.CashEffect != "-50.050000000000" {
@@ -93,5 +93,46 @@ func TestIncubationGateCostFeeIsIncluded(t *testing.T) {
 	v, _ := new(big.Rat).SetString(model.CostPenalty)
 	if v.Cmp(big.NewRat(5, 100)) != 0 {
 		t.Fatal("cost penalty dropped fee", model)
+	}
+}
+
+func TestIncubationPayloadsRequireTheirEventKinds(t *testing.T) {
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		command BookCommand
+	}{
+		{"plan-on-observation", BookCommand{Incubation: &IncubationPlan{}}},
+		{"model-on-observation", BookCommand{ModelFill: &IncubationFill{CostPenalty: "-1000"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, e := NewCappedState(DefaultCappedConfig("book", "paper", Cash, at))
+			if e != nil {
+				t.Fatal(e)
+			}
+			c := tc.command
+			c.ID, c.Kind, c.At = "observation", "risk_observe", at
+			if _, e = ApplyCappedCommand(s, c); e == nil {
+				t.Fatal("unrelated command accepted incubation payload")
+			}
+			// Loaded history must fail closed too, before producing any return.
+			s.Events, s.Version = []BookCommand{c}, 1
+			if _, e = ApplyCappedCommand(s, c); e == nil {
+				t.Fatal("idempotent retry accepted malformed payload")
+			}
+			if _, e = IncubationReturns(s, nil, at); e == nil {
+				t.Fatal("malformed retained history produced an incubation return")
+			}
+		})
+	}
+}
+
+func TestIncubationModelIgnoresPlanOnUnrelatedEvent(t *testing.T) {
+	at := time.Now().UTC()
+	p := IncubationPlan{Rebalance: allocation.RebalanceRequest{ID: "allocation"}}
+	o := BookOrder{ID: "owned", AllocationID: "allocation"}
+	s := CappedState{Events: []BookCommand{{Kind: "risk_observe", Incubation: &p}, {Kind: "portfolio_reserve", Order: &o}}}
+	if model, e := ModelIncubationFill(s, BookFill{OrderID: o.ID, At: at}); e != nil || model != nil {
+		t.Fatal("unrelated event supplied a model plan", model, e)
 	}
 }

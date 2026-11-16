@@ -298,6 +298,9 @@ func replay(s CappedState) (*bookReplay, error) {
 	last := s.Config.OpenedAt
 	financialEvents := []BookCommand{}
 	for _, c := range s.Events {
+		if c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
+			return nil, errors.New("incubation payload differs from event kind")
+		}
 		if c.ID == "" || len(c.ID) > 128 || ids[c.ID] || c.At.Before(last) || c.At.IsZero() {
 			return nil, ErrBookConflict
 		}
@@ -471,6 +474,9 @@ var hashText = regexp.MustCompile(`^[a-f0-9]{64}$`)
 // ApplyCappedCommand returns a detached state. Exact event retries are idempotent;
 // changed retries conflict. A failed command never changes the previous state.
 func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
+	if c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
+		return s, errors.New("incubation payload differs from event kind")
+	}
 	raw, e := json.Marshal(s)
 	if e != nil {
 		return s, e

@@ -62,7 +62,7 @@ func validateIncubationPlan(s CappedState, c BookCommand) error {
 		if e.ID == p.Rebalance.ID || e.Order != nil && e.Order.AllocationID == p.Rebalance.ID {
 			return errors.New("incubation allocation already exists before plan")
 		}
-		if e.Incubation != nil && e.Incubation.Rebalance.ID == p.Rebalance.ID {
+		if e.Kind == "incubation_plan" && e.Incubation != nil && e.Incubation.Rebalance.ID == p.Rebalance.ID {
 			return errors.New("incubation allocation already owned")
 		}
 		if e.At.After(p.DecidedAt) {
@@ -116,7 +116,7 @@ func ModelIncubationFill(s CappedState, f BookFill) (*IncubationFill, error) {
 	plans := map[string]*IncubationPlan{}
 	orders := map[string]*BookOrder{}
 	for _, event := range s.Events {
-		if event.Incubation != nil {
+		if event.Kind == "incubation_plan" && event.Incubation != nil {
 			plans[event.Incubation.Rebalance.ID] = event.Incubation
 		}
 		if event.Kind == "portfolio_reserve" && event.Order != nil {
@@ -245,7 +245,7 @@ func IncubationReturns(s CappedState, marks map[string]string, at time.Time) (In
 		}
 	}
 	for _, event := range s.Events {
-		if event.ModelFill != nil {
+		if event.Kind == "fill" && event.ModelFill != nil {
 			v, ok := new(big.Rat).SetString(event.ModelFill.CostPenalty)
 			if !ok {
 				return out, errors.New("invalid model penalty")
@@ -291,7 +291,7 @@ func checkIncubationRebalance(s CappedState, c BookCommand) error {
 		if event.ID == c.ID {
 			break
 		}
-		if event.Incubation != nil && event.Incubation.Rebalance.ID == c.ID {
+		if event.Kind == "incubation_plan" && event.Incubation != nil && event.Incubation.Rebalance.ID == c.ID {
 			if !reflect.DeepEqual(event.Incubation.Rebalance, *c.Rebalance) {
 				return errors.New("rebalance differs from retained incubation decisions")
 			}

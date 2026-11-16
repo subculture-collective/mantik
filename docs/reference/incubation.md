@@ -68,9 +68,14 @@ ineligible. Runtime model strategies use the explicit `forward_only` gate route,
 never an invented historical pass. The service interface accepts such compiled
 strategies; the stock CLI compiles library and expression recipes only.
 
-The whole roster is checked before any strategy runs. Plan retention, sizing and
-new reservations repeat search-count freshness under the same family fence as
-trial starts. A concurrent new search cannot authorize an order using stale N.
+The whole roster is checked before any strategy runs. An existing sleeve owner
+whose gate search count has changed may still evaluate its strategy, but only a
+complete, explicit flat target can proceed. A hold or nonzero target still needs
+a fresh admission; a new sleeve cannot use this exit exception. Flat exits use
+the retained sleeve identity and risk settings. Plan retention, sizing and new
+reservations repeat these admission checks atomically; new exposure uses the
+same family fence as trial starts. A concurrent new search cannot authorize new
+exposure using stale N.
 Gate clocks must precede the strategy view. The distributor retains the existing
 5% aggregate incubation pool, 1% cap for each model-driven version, equal pool
 sharing, minimum-balance waits and permanent strategy-version sleeve ownership.
@@ -83,6 +88,10 @@ quotes must be prospective, usable, uncrossed and no more than 60 seconds old;
 the market clock must be strictly later than the decision, and receipt must be
 between market time and execution time. Current observations cannot be reused as
 historical knowledge.
+
+The real paper adapter repeats the execution-clock and quote-age checks after
+its account/asset reads and durable intent retention, immediately before the
+order POST. A quote that expires during this preparation cannot be submitted.
 
 ## Fill comparison and returns
 
@@ -108,6 +117,8 @@ quote hash, model clock, the worse net cash effect and the nonnegative cost
 penalty against the venue. Buy debits use the larger total cost; sell proceeds
 use the smaller net receipt. Fees participate in that comparison. Exact retries
 add no economic event; changed venue activities or comparison records conflict.
+Journal commands reject `Incubation` outside `incubation_plan` and `ModelFill`
+outside `fill`; an observation cannot attach a plan or comparison retrospectively.
 
 The return report subtracts accumulated penalties from venue marked equity.
 `NetPnL` excludes opening capital and scheduled deposits.
@@ -130,6 +141,10 @@ Use sync to reconcile a crash between reservation and adapter intent: only the
 adapter's durable abort can release an order that was never submitted. An
 unsent expired cycle requires fresh quotes and a new ID; it cannot reopen an
 old order after its quote has expired.
+If the adapter's final pre-POST check refuses a new intent, its durable abort
+fences the ID and allows the capped reservation to be released. Previously
+submitted or ambiguous intents remain recoverable by GET after quote expiry;
+they never run the new-submission check again or receive another POST.
 
 Local tests use explicit admission and quote contract fixtures with a fake paper
 broker. The disposable SQL contract checks plan/model persistence, replay and
