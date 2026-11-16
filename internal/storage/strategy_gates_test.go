@@ -60,6 +60,46 @@ func gateStorageContracts(t *testing.T, s strategygate.Store) {
 	if e != nil || r.Decision.Checks[0].Reason == "mutated" || r.Declaration.Spec[0] != '{' {
 		t.Fatal("reader mutated history", r, e)
 	}
+	expectedHash, e := strategygate.Hash(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	invalidDecision := decision
+	invalidDecision.DeclarationSHA256 = strings.Repeat("c", 64)
+	for _, tc := range []struct {
+		name string
+		call func() (strategygate.Record, error)
+		want error
+	}{
+		{"declaration conflict", func() (strategygate.Record, error) { return s.DeclareStrategyGate(ctx, changed) }, strategygate.ErrConflict},
+		{"decision conflict", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, changedDecision) }, strategygate.ErrConflict},
+		{"invalid decision", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, invalidDecision) }, strategygate.ErrInvalid},
+	} {
+		t.Run(tc.name+" returns detached history", func(t *testing.T) {
+			got, err := tc.call()
+			if !errors.Is(err, tc.want) || got.Decision == nil {
+				t.Fatal("missing retained error result", got, err)
+			}
+			originalSpec := got.Declaration.Spec[0]
+			originalStatus, originalReason := got.Decision.Status, got.Decision.Checks[0].Reason
+			defer func() {
+				got.Declaration.Spec[0] = originalSpec
+				got.Decision.Status = originalStatus
+				got.Decision.Checks[0].Reason = originalReason
+			}()
+			got.Declaration.Spec[0] = '['
+			got.Decision.Status = "passed"
+			got.Decision.Checks[0].Reason = "mutated through error result"
+			retained, err := s.StrategyGate(ctx, d.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actualHash, err := strategygate.Hash(retained)
+			if err != nil || actualHash != expectedHash {
+				t.Fatal("error result mutated retained gate", retained, err)
+			}
+		})
+	}
 }
 
 func TestMemoryStrategyGates(t *testing.T) { gateStorageContracts(t, NewMemory()) }

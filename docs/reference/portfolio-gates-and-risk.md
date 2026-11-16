@@ -10,6 +10,8 @@ session calendar, purge/embargo design, balance, benchmark series and reviewed
 source assertions before registry execution. Schema 122 keeps declarations and
 final decisions append-only. Exact retries preserve their original clocks;
 changed retries conflict. Migration replay retains existing books and trials.
+Store results are detached from retained history, including conflict and
+decision-validation error results.
 The declaration also binds assets, engine version, account type, leverage mode
 and exact base/stress costs. Undeclared deposits or larger test capital cannot
 make a current-size gate pass. Incubation must use the gate's account type.

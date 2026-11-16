@@ -13,7 +13,7 @@ import (
 func copyGate(r strategygate.Record) (strategygate.Record, error) {
 	raw, e := json.Marshal(r)
 	if e != nil {
-		return r, e
+		return strategygate.Record{}, e
 	}
 	var out strategygate.Record
 	e = json.Unmarshal(raw, &out)
@@ -56,7 +56,8 @@ func (m *Memory) DeclareStrategyGate(ctx context.Context, d strategygate.Declara
 	defer m.mu.Unlock()
 	if old, ok := m.strategyGates[d.ID]; ok {
 		if !sameGate(old.Declaration, d) {
-			return old, strategygate.ErrConflict
+			detached, e := copyGate(old)
+			return detached, errors.Join(strategygate.ErrConflict, e)
 		}
 		return copyGate(old)
 	}
@@ -97,18 +98,20 @@ func (m *Memory) RecordStrategyGate(ctx context.Context, d strategygate.Decision
 		return r, strategygate.ErrNotFound
 	}
 	if e := validateGateDecision(r, d); e != nil {
-		return r, e
+		detached, copyErr := copyGate(r)
+		return detached, errors.Join(e, copyErr)
 	}
 	if r.Decision != nil {
 		if !sameGate(*r.Decision, d) {
-			return r, strategygate.ErrConflict
+			detached, e := copyGate(r)
+			return detached, errors.Join(strategygate.ErrConflict, e)
 		}
 		return copyGate(r)
 	}
 	r.Decision = &d
 	detached, e := copyGate(r)
 	if e != nil {
-		return r, e
+		return strategygate.Record{}, e
 	}
 	m.strategyGates[d.ID] = detached
 	return copyGate(detached)
