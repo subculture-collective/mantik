@@ -21,7 +21,7 @@ The recipe policy is `reviewed-option-recipes-v1`. `DefaultOption(kind)` fixes:
 | Opening limits | Close × 1.10 for buys; close × 0.90 for sells | Decision-time limit scenarios, never promised fills |
 | Reserve budget | 5% of marked equity | Also bounded by settled cash; hard risk limits still apply |
 | Contract ceiling | 100 whole equal-ratio contracts | Covered calls also require 100 imported paid shares per contract |
-| Holding period | 5 supplied sessions after the last opening fill | Close is attempted on that session and retried if refused |
+| Holding period | 5 distinct retained sessions after the last opening fill | Close is attempted on that session and retried if refused |
 
 The constructor validates all parameters. Reserve fraction cannot exceed 10%,
 DTE cannot exceed 365, quantity cannot exceed 100 and holding period cannot
@@ -40,7 +40,7 @@ structure is unavailable. Never mix expiries or infer missing chain members.
 | `covered_call` | Sell a call with strike at or above spot, closest to target delta. Imported paid shares remain dedicated collateral. |
 | `cash_secured_put` | Sell a put with strike at or below spot, closest to target absolute delta. Reserve at least the full strike obligation and round-trip fees. |
 | `vertical` | Sell an eligible put and buy the nearest put at least the wing distance below it. Rank shorts only when a usable wing exists. |
-| `iron_condor` | Combine protected put and call shorts closest to target absolute delta. Put short must be below call short; buy outer wings. |
+| `iron_condor` | Rank feasible protected put/call pairs by combined absolute delta-target distance, with put then call symbol tie breaks. Put short must be below call short; buy outer wings. |
 | `iron_butterfly` | Sell a put and call at the common strike nearest spot, with usable outer wings. Symbol order breaks an equal-distance central-strike tie. |
 
 A delta target ranks available strikes; it is not a promise of a particular
@@ -74,9 +74,13 @@ each explicit supplied clock, it:
    fill before shorts, at most one whole leg per later bar. Buys use high plus
    slippage and sells use low minus slippage, with positive fees. A limit gap,
    unavailable bar, Greek breach or persistent brake prevents the fill.
-4. Counts holding sessions only after every opening leg fills, then calls
-   `Close`, which unwinds shorts before protection. Failed closes retain the
-   position and reservation. A subsequent supplied session may select a new lot.
+4. Counts distinct retained session dates only after every opening leg fills.
+   Re-reading the same session cannot advance the holding period. Every holding
+   cut rechecks current hard risk and Greek limits. A breach records its exact
+   reasons and triggers a protective close, retried even if later marks recover.
+   The scheduled holding deadline also calls `Close`, which unwinds shorts before
+   protection. Failed closes retain the position and reservation. A subsequent
+   supplied session may select a new lot.
 5. Cancels only untouched orders at the horizon. An open or partially filled
    lot remains outstanding in the report, with `Complete=false`. It does not
    invent a terminal bar or turn a liability into zero.

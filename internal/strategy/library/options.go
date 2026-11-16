@@ -267,6 +267,35 @@ func (s *Option) selectLegs(c options.Chain) []options.Leg {
 		case IronCondor, IronButterfly:
 			p, pok := short("put")
 			a, aok := short("call")
+			if s.cfg.Kind == IronCondor {
+				// Rank complete feasible pairs. Independently best shorts may
+				// share the ATM strike even when a valid outer pair exists.
+				puts, calls := []options.Entry{}, []options.Entry{}
+				for _, e := range entries {
+					if _, ok := wing(e); !ok {
+						continue
+					}
+					if e.Type == "put" && e.Strike <= c.Spot.Price {
+						puts = append(puts, e)
+					}
+					if e.Type == "call" && e.Strike >= c.Spot.Price {
+						calls = append(calls, e)
+					}
+				}
+				pok, aok = false, false
+				score := math.Inf(1)
+				for _, put := range puts {
+					for _, call := range calls {
+						if put.Strike >= call.Strike {
+							continue
+						}
+						n := math.Abs(math.Abs(put.Greeks.Delta)-s.cfg.TargetDelta) + math.Abs(math.Abs(call.Greeks.Delta)-s.cfg.TargetDelta)
+						if n < score {
+							p, a, pok, aok, score = put, call, true, true, n
+						}
+					}
+				}
+			}
 			if s.cfg.Kind == IronButterfly {
 				p, pok = best("put", func(e options.Entry) float64 {
 					for _, call := range entries {

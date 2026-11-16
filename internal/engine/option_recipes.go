@@ -97,6 +97,8 @@ func RunOptionBacktest(ctx context.Context, cfg OptionBacktestConfig) (OptionBac
 	active := ""
 	filled := 0
 	hold := 0
+	lastSession := ""
+	riskExit := false
 	sequence := 0
 	record := func(at time.Time, action, order string, q int, p *library.OptionPlan, r OptionResult) error {
 		snap, err := b.Snapshot(ctx, at)
@@ -166,6 +168,8 @@ func RunOptionBacktest(ctx context.Context, cfg OptionBacktestConfig) (OptionBac
 					active = order
 					filled = 0
 					hold = 0
+					lastSession = ""
+					riskExit = false
 					break
 				}
 			}
@@ -178,13 +182,33 @@ func RunOptionBacktest(ctx context.Context, cfg OptionBacktestConfig) (OptionBac
 				return out, err
 			}
 			filled += len(r.Fills)
+			if filled == len(lot.structure.Legs) && len(r.Fills) > 0 {
+				lastSession = r.Fills[len(r.Fills)-1].Bar.Date
+			}
 			if err := record(at, "step", active, 0, nil, r); err != nil {
 				return out, err
 			}
 			continue
 		}
-		hold++
-		if hold < out.Config.HoldSessions {
+		chains, err := b.observe(ctx, at, lot.asset)
+		if err != nil {
+			return out, err
+		}
+		reasons, err := b.check(chains)
+		if err != nil {
+			return out, err
+		}
+		if len(reasons) > 0 {
+			riskExit = true
+			if err := record(at, "risk_breach", active, 0, nil, OptionResult{Reasons: reasons}); err != nil {
+				return out, err
+			}
+		}
+		if session := chains[lot.asset].Spot.Date; session > lastSession {
+			hold++
+			lastSession = session
+		}
+		if !riskExit && hold < out.Config.HoldSessions {
 			if err := record(at, "hold", active, 0, nil, OptionResult{}); err != nil {
 				return out, err
 			}
