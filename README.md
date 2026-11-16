@@ -58,7 +58,8 @@ quotes and zero fees or slippage.
   capital before submission and reconciles its own fills and scheduled funding.
   Strategy orders must match a retained distributor plan and pass the fixed
   exposure, cash, loss and emergency-control checks before submission.
-  The opt-in [incubation runner](docs/reference/incubation.md) runs eligible
+  The opt-in [incubation runner](docs/reference/incubation.md), including a
+  supervised terminal mode with a separate owner-configured safety source, runs eligible
   strategies on retained prospective quotes and reports the worse venue/model
   fill result, with no qualification credit. It preserves explicit flat exits
   for retained owners with stale research and rechecks quote expiry immediately

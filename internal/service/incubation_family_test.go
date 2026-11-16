@@ -53,7 +53,6 @@ func TestIncubationPendingFamilyRetainedOwnerExit(t *testing.T) {
 			closeReq := nextForwardCycle(req, "close-review", at)
 			closeReq.Limits = map[string]string{"SPY": "99"}
 			r.now = func() time.Time { return closeReq.ExecuteAt }
-			healthyIncubationWorkers(t, r, closeReq.ExecuteAt)
 			out, err := r.Run(ctx, closeReq)
 			if err != nil || len(out.Distribution.Orders) != 1 || !out.Distribution.Orders[0].ReduceOnly || b.posts != 2 {
 				t.Fatalf("safe exit blocked: error=%v orders=%d posts=%d strategy_calls=%d", err, len(out.Distribution.Orders), b.posts, s.calls)
@@ -111,7 +110,7 @@ func TestIncubationPendingFamilyAtActualPost(t *testing.T) {
 			}
 			r.Broker = p
 			_, err = r.Run(context.Background(), req)
-			if !errors.Is(err, strategytrial.ErrFamilyPending) || posts != 0 {
+			if (err == nil || !errors.Is(err, strategytrial.ErrFamilyPending) && !(bound && strings.Contains(err.Error(), "book_safety_forward_search_unavailable"))) || posts != 0 {
 				t.Fatalf("pending family reached POST: err=%v posts=%d", err, posts)
 			}
 			state, err := r.Store.CappedBook(context.Background(), r.BookID)

@@ -19,6 +19,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/cappedbook"
 	"git.subcult.tv/subculture-collective/mantik/internal/executioncost"
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
+	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/internal/workhealth"
 )
 
@@ -139,7 +140,100 @@ func (w *IncubationSafetyWorker) Run(ctx context.Context, clock Clock) error {
 	return ctx.Err()
 }
 
+// Readiness inspects this worker's existing book-specific evidence. It does not
+// execute a cycle, renew a clock, or grant admission to an entry request.
+func (w *IncubationSafetyWorker) Readiness(ctx context.Context, at time.Time, marks map[string]string) workhealth.Check {
+	if w == nil {
+		return healthCheck(false, "book_safety_coverage_unavailable", at)
+	}
+	state, err := w.runner.Store.CappedBook(ctx, w.runner.BookID)
+	if err != nil {
+		return healthCheck(false, "book_safety_state_unavailable", at)
+	}
+	return w.coverageWithClock(ctx, w.runner.Store, state, func() time.Time { return at }, marks)
+}
+
 func (w *IncubationSafetyWorker) coverage(store IncubationStore, state account.CappedState, at time.Time, marks map[string]string) workhealth.Check {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return w.coverageWithClock(ctx, store, state, func() time.Time { return at }, marks)
+}
+
+// Fetch retained forward pins before taking the final live worker snapshot.
+// A slow read cannot preserve withdrawn coverage or extend a protection clock.
+func (w *IncubationSafetyWorker) coverageWithClock(ctx context.Context, store IncubationStore, state account.CappedState, now func() time.Time, marks map[string]string) workhealth.Check {
+	at := now()
+	first := w.coverageSnapshot(store, state, at, marks)
+	if !first.Ready {
+		return first
+	}
+	bindings := account.ForwardBindings(state)
+	type pin struct {
+		record forward.Record
+		opened time.Time
+		n      int64
+	}
+	var pins []pin
+	snap, err := account.SnapshotCapped(state, marks, at)
+	if err != nil {
+		return healthCheck(false, "book_safety_state_unavailable", at)
+	}
+	for sleeve, id := range bindings {
+		opened, err := account.ForwardHoldingOpened(state, sleeve, at)
+		if err != nil {
+			return healthCheck(false, "book_safety_state_unavailable", at)
+		}
+		pending := false
+		for _, order := range snap.Pending {
+			if order.SleeveID == sleeve && !order.ReduceOnly {
+				pending = true
+			}
+		}
+		if opened.IsZero() && !pending {
+			continue
+		}
+		fs, ok := store.(forward.Store)
+		if !ok {
+			return healthCheck(false, "book_safety_forward_unavailable", at)
+		}
+		record, err := fs.ForwardDeclaration(ctx, id)
+		if err != nil {
+			return healthCheck(false, "book_safety_forward_unavailable", at)
+		}
+		n, err := store.StrategyTrialSearchTotal(ctx, record.Declaration.Family)
+		if err != nil {
+			return healthCheck(false, "book_safety_forward_search_unavailable", at)
+		}
+		pins = append(pins, pin{record, opened, n})
+	}
+	at = now()
+	live := w.coverageSnapshot(store, state, at, marks)
+	if !live.Ready {
+		return live
+	}
+	for _, p := range pins {
+		clocks := p.record.Clocks(at, p.n, p.opened)
+		if !clocks.OutcomeOpen || clocks.HoldExpired {
+			return healthCheck(false, "book_safety_protection_due", at, "forward:"+p.record.Declaration.ID)
+		}
+		deadline := p.record.Declaration.OutcomeDeadline
+		if !p.opened.IsZero() {
+			holding := p.opened.Add(time.Duration(p.record.Declaration.MaxHoldingSeconds) * time.Second)
+			if holding.Before(deadline) {
+				deadline = holding
+			}
+		}
+		if deadline.Before(live.ExpiresAt) {
+			live.ExpiresAt = deadline
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return healthCheck(false, "book_safety_observation_cancelled", at)
+	}
+	return live
+}
+
+func (w *IncubationSafetyWorker) coverageSnapshot(store IncubationStore, state account.CappedState, at time.Time, marks map[string]string) workhealth.Check {
 	if w == nil {
 		return healthCheck(false, "book_safety_coverage_unavailable", time.Time{})
 	}
@@ -196,7 +290,7 @@ func (w *IncubationSafetyWorker) coverage(store IncubationStore, state account.C
 		if err != nil {
 			return healthCheck(false, "book_safety_state_unavailable", at)
 		}
-		if !opened.IsZero() && !at.Before(opened.Add(w.policy.MaximumHolding)) || account.ReviewExitRequired(state, sleeve, owner.StrategyID, at) {
+		if !opened.IsZero() && !at.Before(opened.Add(w.policy.MaximumHolding)) || snap.Risk.Breakers[owner.StrategyID] || snap.Risk.Retired[owner.StrategyID] || account.ReviewExitRequired(state, sleeve, owner.StrategyID, at) {
 			return healthCheck(false, "book_safety_protection_due", at, "sleeve:"+sleeve)
 		}
 	}
@@ -257,6 +351,11 @@ func (w *IncubationSafetyWorker) cycle(ctx context.Context, clock Clock) (accoun
 				return state, err
 			}
 			n, err := w.runner.Store.StrategyTrialSearchTotal(ctx, record.Declaration.Family)
+			if errors.Is(err, strategytrial.ErrFamilyPending) {
+				// Unknown multiplicity denies entry, never protective delivery.
+				flatten = true
+				continue
+			}
 			if err != nil {
 				return state, err
 			}

@@ -98,11 +98,12 @@ func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
 
 func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) error {
 	fs, db, id := gateFlags("incubation", errOut)
-	action := fs.String("action", "show", "init, run, sync or show (paper only)")
+	action := fs.String("action", "show", "init, run, supervise, sync or show (paper only)")
 	input := fs.String("input", "", "reviewed incubation input JSON")
 	journal := fs.String("journal", "", "absolute private paper adapter journal directory")
 	credentials := fs.String("credentials-file", "", "mode-0600 paper credentials JSON")
 	brokerID := fs.String("account-id", "", "expected paper account ID")
+	safetyConfig := fs.String("safety-config", "", "separate owner safety policy and quote-file configuration for supervise")
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			return nil
@@ -112,7 +113,7 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 	if fs.NArg() != 0 || *id == "" || os.Getenv(*db) == "" {
 		return errors.New("incubation requires id and explicit database-env")
 	}
-	if *action != "init" && *action != "run" && *action != "sync" && *action != "show" {
+	if *action != "init" && *action != "run" && *action != "sync" && *action != "show" && *action != "supervise" {
 		return errors.New("unknown incubation action")
 	}
 	var in incubationInput
@@ -122,6 +123,9 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 		}
 	}
 	var req service.IncubationRequest
+	if *action == "supervise" && (*safetyConfig == "" || *safetyConfig == *input) {
+		return errors.New("supervise requires a separate owner safety-config")
+	}
 	if *action == "run" {
 		var e error
 		req, e = incubationRequest(in)
@@ -171,6 +175,9 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 		return e
 	}
 	runner := service.IncubationRunner{Store: s, Broker: broker, BookID: *id}
+	if *action == "supervise" {
+		return runIncubationSupervision(ctx, runner, *input, *safetyConfig, out)
+	}
 	if *action == "run" {
 		result, e := runner.Run(ctx, req)
 		if e != nil {

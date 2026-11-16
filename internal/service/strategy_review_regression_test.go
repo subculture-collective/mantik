@@ -67,6 +67,7 @@ func TestStrategyReviewRegressionCeilingAfterStalePlan(t *testing.T) {
 	r.now = func() time.Time { return next.ExecuteAt }
 	healthyIncubationWorkers(t, r, next.ExecuteAt)
 	original := r.Store
+	originalSafety := r.Safety
 	var frozen account.StrategyReview
 	r.Store = &reviewAfterPlanStore{IncubationStore: original, after: func(ctx context.Context, _ account.CappedState) error {
 		in := reviewObservation(next.ExecuteAt, "104", previous)
@@ -75,6 +76,7 @@ func TestStrategyReviewRegressionCeilingAfterStalePlan(t *testing.T) {
 		frozen, e = (StrategyReviewService{original}).Review(ctx, r.BookID, "freeze-dollar-budget", in)
 		return e
 	}}
+	r.Safety = startIncubationTestSafety(t, r, next.DecidedAt)
 	out, e := r.Run(ctx, next)
 	if e != nil {
 		t.Fatal(e)
@@ -89,6 +91,7 @@ func TestStrategyReviewRegressionCeilingAfterStalePlan(t *testing.T) {
 	b, _ := new(big.Rat).SetString(later.BudgetCeiling)
 	t.Logf("first %s ceiling=%s; pre-review plan budget=%s; later %s ceiling=%s", frozen.Action, frozen.BudgetCeiling, out.Distribution.Sleeves[0].Budget, later.Action, later.BudgetCeiling)
 	r.Store = original
+	r.Safety = originalSafety
 	fresh := nextForwardCycle(req, "after-missing-review", in.At.Add(time.Second))
 	r.now = func() time.Time { return fresh.ExecuteAt }
 	healthyIncubationWorkers(t, r, fresh.ExecuteAt)

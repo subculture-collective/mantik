@@ -134,11 +134,11 @@ independent `IncubationSafetySource`, fixed symbols, maximum holding duration,
 protective fee reserves and a poll interval of 100 milliseconds to 60 seconds.
 It attaches that same object to `IncubationRunner.Safety`, runs `worker.Run`
 with a service-owned context and clock, and cancels and joins it at shutdown.
-Constructing an object or calling readiness creates no coverage. The standalone
-cycle CLI does not start this worker and therefore cannot authorize new risk;
-it can still request protective work and perform GET-only recovery. A service
-restart needs a new successful safety cycle; retained plan health is inspection
-evidence only. No schema change or persisted worker grant is involved.
+Constructing an object or calling readiness creates no coverage. The one-shot
+`run` action can perform protective work and GET-only recovery. New entries use
+the supervised action below or a service embedding a running worker. A restart
+needs a new successful safety cycle; retained plan health is inspection evidence
+only. No schema change or persisted worker grant is involved.
 
 Each worker cycle collects quotes independently of entry requests, reconciles
 owned orders/fills, observes the existing book risk brake and evaluates holding,
@@ -154,6 +154,46 @@ existing heartbeat grace (10 seconds plus three poll intervals), becomes
 unavailable while the next cycle is in progress, and is withdrawn on failure or
 cancellation. These are service contract tests, not real-paper protection or
 qualification evidence.
+
+The final adapter check reloads live worker coverage after blocking reads.
+Cancellation or a failed cycle withdraws that coverage immediately. Coverage
+also checks every retained exposed sleeve's forward holding and outcome clocks,
+including sleeves unrelated to the proposed order, and expires at the earliest
+protection deadline. A pending trial family denies new exposure but cannot stop
+the worker from delivering retained-owner protective exits.
+
+### Supervised terminal operation
+
+`incubation --action supervise` uses the same explicit database, book, journal,
+credentials and expected-account flags as `run`. Supply `--input` for the cycle
+manifest and a separate `--safety-config` for the operator's fixed worker policy.
+The supervisor keeps the worker running and watches the cycle file for changed
+inputs. It executes each unchanged input once; the journal remains authoritative
+for retries and changed IDs. Entry refusals or invalid cycle files do not stop
+safety work. A fresh cycle needs a new ID and current decision/execution clocks.
+
+The safety configuration contains `QuotesFile` (an absolute path), `Symbols`,
+`Fees`, `MaximumHoldingSeconds` (1 second through 90 days), and `IntervalSeconds`
+(1–60 seconds). It is read once when supervision starts. `QuotesFile` must differ
+from both configuration and cycle paths. The configuration and quote file must
+be regular files owned by the invoking user with mode 0600; symlinks are refused.
+They are service configuration, never strategy or model output.
+
+The independent quote file is a JSON map from each configured symbol to its
+`IncubationQuote`. A trusted collector or operator must refresh it, preserve the
+original source/receipt clocks and hash, and retain the source material outside
+Git. Selecting this file does not attest its provenance. The supervisor does not
+fetch, invent, backdate or approve quotes. Missing, stale, future or misbound
+observations leave new entries unavailable. The cycle's own quotes cannot renew
+worker evidence.
+
+Output is a JSON stream of safety transitions, cycle results/refusals and a final
+`supervision_stopped` event. Status inspection grants no entry authority; the
+runner repeats all checks at execution. Cancellation stops and joins the worker.
+It does not claim to flatten remaining venue positions. Keep supervision running
+while exposure requires protection, and use the retained ledger and original
+adapter IDs for restart reconciliation. No host timer or unattended deployment is
+installed by this command.
 
 The paper adapter must implement `SubmitChecked`. The service repeats admission,
 owner controls, exact distributor-order checks, forward clocks and quote age

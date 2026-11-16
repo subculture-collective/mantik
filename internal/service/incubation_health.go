@@ -99,7 +99,7 @@ func (r IncubationRunner) admission(ctx context.Context, state account.CappedSta
 	// Global demo workflow reports cannot establish responsibility for this
 	// book. Only the running service worker can supply that association and its
 	// independently executed reconciliation/protection evidence.
-	coverage := r.Safety.coverage(r.Store, state, at, marks)
+	coverage := r.Safety.coverageWithClock(ctx, r.Store, state, func() time.Time { return at }, marks)
 	if !coverage.Ready {
 		workers = coverage
 	} else if workers.Ready {
@@ -357,6 +357,20 @@ func (r IncubationRunner) checkHealthSubmission(ctx context.Context, o alpaca.St
 	if err = account.CheckPortfolioSubmission(state, *order, marks); err != nil {
 		return err
 	}
+
+	if !order.ReduceOnly {
+		live := r.Safety.coverageWithClock(ctx, r.Store, state, r.clockNow, marks)
+		if !live.Ready {
+			return fmt.Errorf("new_risk_not_admitted: %s", live.Code)
+		}
+		workers := report.Checks["worker_liveness"]
+		if live.ExpiresAt.Before(workers.ExpiresAt) {
+			workers.ExpiresAt = live.ExpiresAt
+		}
+		workers.EvidenceRefs = append(workers.EvidenceRefs, live.EvidenceRefs...)
+		report.Checks["worker_liveness"] = workers
+		*observed = report
+	}
 	if !order.ReduceOnly {
 		// Reservations do not authorize a later POST after research changes.
 		// Reductions and GET-only recovery require no renewed family admission.
@@ -380,6 +394,14 @@ func (r IncubationRunner) checkHealthSubmission(ctx context.Context, o alpaca.St
 			}
 		}
 	}
+	if !order.ReduceOnly {
+		// Family reads can block too. Inspect the worker again without I/O before
+		// admitting the POST, retaining the earlier forward-deadline bound.
+		live := r.Safety.coverageSnapshot(r.Store, state, r.clockNow(), marks)
+		if !live.Ready {
+			return fmt.Errorf("new_risk_not_admitted: %s", live.Code)
+		}
+	}
 	at := r.clockNow()
 	if at.Before(plan.Rebalance.At) || at.Sub(plan.Rebalance.At) > time.Minute {
 		return fmt.Errorf("incubation quote expired before submission")
@@ -392,7 +414,7 @@ func (r IncubationRunner) checkHealthSubmission(ctx context.Context, o alpaca.St
 			return fmt.Errorf("forward eligibility expired before submission")
 		}
 		workers := report.Checks["worker_liveness"]
-		if workers.ExpiresAt.IsZero() || at.After(workers.ExpiresAt) || at.Before(workers.At) {
+		if workers.ExpiresAt.IsZero() || !at.Before(workers.ExpiresAt) || at.Before(workers.At) {
 			return fmt.Errorf("new_risk_not_admitted: worker evidence expired")
 		}
 		if !reconciliationUnchanged(state, rec, plan.Rebalance.ID) {
