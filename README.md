@@ -59,6 +59,7 @@ quotes and zero fees or slippage.
   Legacy policy inputs remain inspection-only and contradictory fill evidence
   stays quarantined across restart. Interrupted reply classification also blocks
   mutations until inspected; a later GET cannot clear that fence.
+  New opening IDs reserve the internal `mleg-` prefix to avoid custody collisions.
   Synthetic tests cover recovery and protection; real-paper acceptance evidence
   remains a separate regular-session check.
 - **Paper stock orders**: the separate [Alpaca paper adapter](docs/reference/alpaca-paper.md)

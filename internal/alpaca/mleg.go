@@ -205,6 +205,11 @@ func (p *PaperTrader) OpenMLeg(ctx context.Context, o MLegOpen, beforePost func(
 	if !errors.Is(err, os.ErrNotExist) {
 		return OptionPaperOrder{}, err
 	}
+	// Control records and generated closing IDs own this prefix. Apply the
+	// restriction only to new lifecycles so retained orders still recover.
+	if strings.HasPrefix(o.Order.ClientOrderID, "mleg-") {
+		return OptionPaperOrder{}, errors.New("new multi-leg opening client ID uses reserved mleg- prefix")
+	}
 	names, err := directoryNames(p.journal.root)
 	if err != nil {
 		return OptionPaperOrder{}, err

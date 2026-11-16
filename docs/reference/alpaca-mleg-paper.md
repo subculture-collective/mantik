@@ -33,6 +33,11 @@ The opening JSON has five fields, matching `alpaca.MLegOpen`:
   parent side, fractional/notional quantities and extended hours are absent.
   Positive package limits mean debit; negative limits mean credit. Zero limits
   are refused by this route. Stock limit validation remains positive-only.
+  New opening client IDs cannot start with `mleg-`: that namespace is reserved
+  for lifecycle controls, custody records and generated close orders. Refusal
+  occurs before lifecycle or wire-intent retention and before admission/POST.
+  Exact recovery of a retained lifecycle precedes this new-opening restriction;
+  existing noncolliding prefixed orders can still reconcile and close.
 - `Structure`: the #84 `options.Structure`, with `Kind` and `Legs`. Signed
   `Contracts` must equal wire strategy units times each signed ratio, in the
   same leg order. `Multiplier` is 100. `Limit` is dollars per underlying share.
