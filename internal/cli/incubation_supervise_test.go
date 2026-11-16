@@ -82,7 +82,7 @@ func TestIncubationSupervisionKeepsSafetyRunningAfterCycleRefusal(t *testing.T) 
 			ctx, cancel := context.WithTimeout(context.Background(), 2200*time.Millisecond)
 			defer cancel()
 			var out bytes.Buffer
-			err := runIncubationSupervision(ctx, runner, cyclePath, configPath, &out)
+			err := runIncubationSupervision(ctx, runner, cyclePath, configPath, &out, nil)
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal(err)
 			}

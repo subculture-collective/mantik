@@ -19,6 +19,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
+	analyststrategy "git.subcult.tv/subculture-collective/mantik/internal/strategy/analyst"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategytrial"
 	"git.subcult.tv/subculture-collective/mantik/internal/workhealth"
@@ -243,6 +244,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			views = make([]strategy.View, len(req.Strategies))
 			for i, s := range req.Strategies {
 				g := gates[i]
+				if analyst, ok := s.Strategy.(*analyststrategy.Strategy); ok {
+					if analyst.ForwardDeclarationID() == "" || bindings[s.SleeveID] != analyst.ForwardDeclarationID() {
+						return out, forward.ErrConflict
+					}
+				}
 				cost, costErr := executioncost.FromDeclaration(g.Declaration.BaseCost, s.Strategy.Spec().ModelDriven)
 				if costErr != nil {
 					return out, costErr
@@ -305,7 +311,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 						controlled, holdExposure, d.State = true, true, book.State
 					} else {
 						views[i] = view
-						d, err = strategy.Decide(s.Strategy, view)
+						if analyst, ok := s.Strategy.(*analyststrategy.Strategy); ok {
+							d, holdExposure, err = analyst.IncubationDecision(view)
+						} else {
+							d, err = strategy.Decide(s.Strategy, view)
+						}
 					}
 					if err != nil {
 						return out, err

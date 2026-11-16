@@ -6,14 +6,19 @@ import (
 	"flag"
 	"io"
 	"os"
+	"slices"
 	"time"
 
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
+	"git.subcult.tv/subculture-collective/mantik/internal/analyst"
+	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/marketdata"
+	"git.subcult.tv/subculture-collective/mantik/internal/research"
 	"git.subcult.tv/subculture-collective/mantik/internal/service"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
+	analyststrategy "git.subcult.tv/subculture-collective/mantik/internal/strategy/analyst"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy/library"
 	strategyspec "git.subcult.tv/subculture-collective/mantik/internal/strategy/spec"
 )
@@ -32,6 +37,7 @@ type incubationInput struct {
 	Strategies           []incubationStrategyInput
 }
 type incubationStrategyInput struct {
+	AnalystCycleID         string `json:",omitempty"`
 	SleeveID, GateID, Risk string
 	ForwardDeclarationID   string `json:",omitempty"`
 	Library                *library.Config
@@ -70,6 +76,17 @@ func (s incubationSource) StockUniverse(ctx context.Context, at time.Time) (mark
 	return *s.in.Universe, nil
 }
 func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
+	return incubationRequestFromJournal(context.Background(), in, nil, nil)
+}
+func incubationHasAnalyst(in incubationInput) bool {
+	for _, entry := range in.Strategies {
+		if entry.AnalystCycleID != "" {
+			return true
+		}
+	}
+	return false
+}
+func incubationRequestFromJournal(ctx context.Context, in incubationInput, journal analyst.EvidenceReader, fs forward.Store) (service.IncubationRequest, error) {
 	hash, e := service.IncubationInputHash(in)
 	if e != nil {
 		return service.IncubationRequest{}, e
@@ -79,8 +96,57 @@ func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
 		return req, nil
 	}
 	for _, entry := range in.Strategies {
-		if (entry.Library == nil) == (entry.Expression == nil) {
-			return req, errors.New("choose exactly one compiled library or expression strategy")
+		choices := 0
+		if entry.Library != nil {
+			choices++
+		}
+		if entry.Expression != nil {
+			choices++
+		}
+		if entry.AnalystCycleID != "" {
+			choices++
+		}
+		if choices != 1 {
+			return req, errors.New("choose exactly one compiled library, expression or retained analyst cycle")
+		}
+		if entry.AnalystCycleID != "" {
+			if journal == nil || fs == nil {
+				return req, errors.New("retained analyst registry required")
+			}
+			if len(entry.Bars) != 0 || len(entry.Actions) != 0 || entry.Universe != nil {
+				return req, errors.New("analyst source must come from its retained request")
+			}
+			original, result, err := analyst.Retained(ctx, journal, entry.AnalystCycleID)
+			if err != nil {
+				return req, err
+			}
+			if result.EvidenceClass != "prospective_market_unqualified" || in.DecidedAt.Before(result.Receipt.At) {
+				return req, errors.New("analyst requires prospective evidence known before the decision")
+			}
+			record, err := fs.ForwardDeclaration(ctx, original.ForwardDeclarationID)
+			if err != nil {
+				return req, err
+			}
+			if entry.GateID != "" && entry.GateID != record.Declaration.GateID || entry.ForwardDeclarationID != "" && entry.ForwardDeclarationID != record.Declaration.ID || entry.SleeveID != record.Declaration.SleeveID {
+				return req, forward.ErrConflict
+			}
+			assets := slices.Clone(entry.Assets)
+			slices.Sort(assets)
+			expected := slices.Clone(original.Config.Assets)
+			slices.Sort(expected)
+			if len(assets) > 0 && !slices.Equal(assets, expected) {
+				return req, errors.New("analyst assets differ from retained configuration")
+			}
+			compiled, err := analyststrategy.New(original.Config, result.Receipt)
+			if err != nil {
+				return req, err
+			}
+			risk := entry.Risk
+			if risk == "" {
+				risk = "1"
+			}
+			req.Strategies = append(req.Strategies, service.IncubatingStrategy{SleeveID: entry.SleeveID, GateID: record.Declaration.GateID, ForwardDeclarationID: record.Declaration.ID, Risk: risk, Strategy: compiled, Source: original.Data, Assets: expected})
+			continue
 		}
 		var s strategy.Strategy
 		if entry.Library != nil {
@@ -126,7 +192,7 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 	if *action == "supervise" && (*safetyConfig == "" || *safetyConfig == *input) {
 		return errors.New("supervise requires a separate owner safety-config")
 	}
-	if *action == "run" {
+	if *action == "run" && !incubationHasAnalyst(in) {
 		var e error
 		req, e = incubationRequest(in)
 		if e != nil {
@@ -158,6 +224,14 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 		}
 		return emit(out, state)
 	}
+	analystJournal := incubationAnalystJournal{database: os.Getenv(*db)}
+	if *action == "run" && incubationHasAnalyst(in) {
+		req, e = incubationRequestFromJournal(ctx, in, analystJournal, s)
+		if e != nil {
+			return e
+		}
+	}
+
 	if *journal == "" || *credentials == "" || *brokerID == "" {
 		return errors.New("incubation run/sync require journal, credentials-file and account-id")
 	}
@@ -176,7 +250,7 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 	}
 	runner := service.IncubationRunner{Store: s, Broker: broker, BookID: *id}
 	if *action == "supervise" {
-		return runIncubationSupervision(ctx, runner, *input, *safetyConfig, out)
+		return runIncubationSupervision(ctx, runner, *input, *safetyConfig, out, analystJournal)
 	}
 	if *action == "run" {
 		result, e := runner.Run(ctx, req)
@@ -190,4 +264,17 @@ func runIncubation(ctx context.Context, args []string, out, errOut io.Writer) er
 		return e
 	}
 	return emit(out, result)
+}
+
+// Open the model evidence reader only when a changed cycle actually selects an
+// analyst. Missing model evidence cannot prevent the safety worker from starting.
+type incubationAnalystJournal struct{ database string }
+
+func (j incubationAnalystJournal) Events(ctx context.Context, id string) ([]research.Event, error) {
+	records, err := research.OpenPostgresJournal(ctx, j.database)
+	if err != nil {
+		return nil, err
+	}
+	defer records.Close()
+	return records.Events(ctx, id)
 }

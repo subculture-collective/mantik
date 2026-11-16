@@ -127,14 +127,18 @@ func Parse(raw string, assets []string) (Selection, error) {
 // Receipt binds one completed workflow to its exact view, never a backtest result.
 // An empty or unsuccessful receipt means no target, distinct from explicit flat.
 type Receipt struct {
-	At            time.Time
-	InputAt       time.Time
-	StrategyID    string
-	ViewSHA256    string
-	EvidenceClass string
-	SourceSHA256  string
-	Completed     bool
-	Selection     Selection
+	ForwardDeclarationID string `json:",omitempty"`
+	CycleID              string `json:",omitempty"`
+	RequestSHA256        string `json:",omitempty"`
+	ResultSHA256         string `json:",omitempty"`
+	At                   time.Time
+	InputAt              time.Time
+	StrategyID           string
+	ViewSHA256           string
+	EvidenceClass        string
+	SourceSHA256         string
+	Completed            bool
+	Selection            Selection
 }
 
 // Strategy is a deterministic adapter over an immutable receipt.
@@ -213,3 +217,31 @@ func (s *Strategy) Decide(v strategy.View) (strategy.Decision, error) {
 }
 
 func hash(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
+
+// IncubationDecision consumes a retained runtime receipt after its completion
+// clock, with a fixed 60-second lifetime. Holds preserve actual quantities.
+// The ordinary Strategy.Decide contract stays unchanged for legacy engines.
+func (s *Strategy) IncubationDecision(v strategy.View) (strategy.Decision, bool, error) {
+	r := s.receipt
+	for _, h := range []string{r.SourceSHA256, r.RequestSHA256, r.ResultSHA256} {
+		if b, e := hex.DecodeString(h); e != nil || len(b) != 32 {
+			return strategy.Decision{}, false, errors.New("analyst runtime source binding unavailable")
+		}
+	}
+	if r.EvidenceClass != "prospective_market_unqualified" || r.CycleID == "" || r.ForwardDeclarationID == "" || r.At.IsZero() || r.InputAt.IsZero() || v.At().Before(r.At) {
+		return strategy.Decision{}, false, errors.New("analyst incubation requires retained prospective post-completion evidence")
+	}
+	state, _ := json.Marshal(r)
+	d := strategy.Decision{State: state}
+	_, h := input(v, r.InputAt)
+	if !r.Completed || r.Selection.Action == "hold" || v.At().Sub(r.At) > time.Minute || h != r.ViewSHA256 {
+		return d, true, nil
+	}
+	if r.Selection.Action == "long" {
+		d.Targets = []strategy.Target{{Asset: r.Selection.Asset, Weight: "1"}}
+	}
+	return d, false, nil
+}
+
+// ForwardDeclarationID identifies the prospective owner of this runtime receipt.
+func (s *Strategy) ForwardDeclarationID() string { return s.receipt.ForwardDeclarationID }
