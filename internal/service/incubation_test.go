@@ -14,7 +14,6 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
 	"git.subcult.tv/subculture-collective/mantik/internal/cappedbook"
-	"git.subcult.tv/subculture-collective/mantik/internal/domain"
 	"git.subcult.tv/subculture-collective/mantik/internal/engine"
 	"git.subcult.tv/subculture-collective/mantik/internal/marketdata"
 	"git.subcult.tv/subculture-collective/mantik/internal/risk"
@@ -153,7 +152,7 @@ func incubationFixture(t *testing.T, model bool) (IncubationRunner, IncubationRe
 	r := IncubationRunner{Store: m, Broker: b, BookID: "incubation-book", now: func() time.Time { return execution }}
 	req := IncubationRequest{ID: "cycle-one", InputSHA256: strings.Repeat("c", 64), DecidedAt: decision, ExecuteAt: execution, Strategies: []IncubatingStrategy{{SleeveID: "trend", GateID: d.ID, Risk: "0.02", Strategy: s, Source: incubationTestSource{}, Assets: []string{"SPY"}}}, Quotes: map[string]account.IncubationQuote{"SPY": {Symbol: "SPY", Bid: "99.99", Ask: "100.01", BidQuantity: "100", AskQuantity: "100", SourceSHA256: strings.Repeat("d", 64), EvidenceClass: "prospective_market_unqualified", OccurredAt: execution, ReceivedAt: execution}}, Limits: map[string]string{"SPY": "101"}, Fees: map[string]string{"SPY": "1"}}
 	req.Calendar = incubationTestCalendar(decision)
-	healthyIncubationWorkers(t, r, execution)
+	r.Safety = startIncubationTestSafety(t, r, execution.Add(-time.Second))
 	return r, req, s, b
 }
 func TestIncubationRunAndConservativeReturns(t *testing.T) {
@@ -422,11 +421,12 @@ func incubationTestCalendar(at time.Time) *IncubationCalendar {
 
 func healthyIncubationWorkers(t *testing.T, r IncubationRunner, at time.Time) {
 	t.Helper()
-	for _, capability := range []string{"protective_monitoring", "action_delivery"} {
-		if e := r.Store.(storage.OperationalStore).ReportWorker(context.Background(), domain.WorkerReport{WorkerHealth: domain.WorkerHealth{Capability: capability, WorkerID: "fixture-worker", At: at, IntervalMillis: 60000}}); e != nil {
-			t.Fatal(e)
-		}
+	// Advance the same running worker so runner copies share evidence from
+	// a newly executed service cycle.
+	if r.Safety == nil {
+		t.Fatal("fixture safety worker missing")
 	}
+	advanceIncubationTestSafety(t, r.Safety, at.Add(-time.Second))
 }
 
 func (b *incubationTestBroker) SubmitChecked(ctx context.Context, o alpaca.StockOrder, check func() error) (alpaca.PaperOrder, error) {

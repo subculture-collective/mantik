@@ -389,6 +389,7 @@ func TestIncubationHealthSlowSnapshotCannotExtendLivenessOrHideOwnerPause(t *tes
 				}
 			}
 			r.Store = store
+			r.Safety = startIncubationTestSafety(t, r, req.DecidedAt)
 			r.Broker = boundaryHealthBroker{incubationTestBroker: b, prepare: func() { store.armed = true }}
 			_, e := r.Run(context.Background(), req)
 			if e == nil || b.posts != 0 {

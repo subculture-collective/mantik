@@ -39,9 +39,10 @@ func healthCheck(ready bool, code string, at time.Time, refs ...string) workheal
 // A reconciliation proof is created only by this runner's completed Sync. It is
 // deliberately absent from request JSON and cannot be restored from an old plan.
 type incubationReconciliation struct {
-	at      time.Time
-	err     error
-	version int64
+	at           time.Time
+	err          error
+	version      int64
+	allocationID string
 }
 
 func (r IncubationRunner) admission(ctx context.Context, state account.CappedState, at time.Time, data workhealth.Check, rec *incubationReconciliation, marks map[string]string) workhealth.Report {
@@ -55,6 +56,8 @@ func (r IncubationRunner) admission(ctx context.Context, state account.CappedSta
 			c.Code = "owned_reconciliation_failed"
 		} else if !c.Ready {
 			c.Code = "owned_reconciliation_expired"
+		} else if !reconciliationUnchanged(state, rec, rec.allocationID) {
+			c.Ready, c.Status, c.Code = false, "unavailable", "owned_reconciliation_book_changed"
 		}
 		report.Checks["reconciliation"] = c
 	}
@@ -91,6 +94,22 @@ func (r IncubationRunner) admission(ctx context.Context, state account.CappedSta
 			if w.At.Before(workers.At) {
 				workers.At = w.At
 			}
+		}
+	}
+	// Global demo workflow reports cannot establish responsibility for this
+	// book. Only the running service worker can supply that association and its
+	// independently executed reconciliation/protection evidence.
+	coverage := r.Safety.coverage(r.Store, state, at, marks)
+	if !coverage.Ready {
+		workers = coverage
+	} else if workers.Ready {
+		workers.Code = "book_safety_workers_current"
+		workers.EvidenceRefs = append(workers.EvidenceRefs, coverage.EvidenceRefs...)
+		if workers.ExpiresAt.IsZero() || coverage.ExpiresAt.Before(workers.ExpiresAt) {
+			workers.ExpiresAt = coverage.ExpiresAt
+		}
+		if coverage.At.Before(workers.At) {
+			workers.At = coverage.At
 		}
 	}
 	report.Checks["worker_liveness"] = workers

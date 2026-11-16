@@ -65,6 +65,10 @@ quotes and zero fees or slippage.
   before the paper adapter's order POST. Cycle health blocks new risk on stale
   daily data or unknown reconciliation, worker liveness or risk evidence, while
   protective flattening, fill reconciliation and settlement remain independent.
+  New risk also requires an active service safety worker bound to that book,
+  paper account and protection policy; generic demo worker success and a
+  standalone cycle invocation cannot supply this authority. Reconciliation
+  retains its exact journal version and refuses concurrent economic changes.
   Authenticated per-book readiness reports admission for each work class.
 - **Kalshi data**: [public collection](docs/reference/kalshi-data.md) retains
   weather-market rules and order-book observations for point-in-time reads.

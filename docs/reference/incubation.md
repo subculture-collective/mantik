@@ -104,19 +104,56 @@ New risk requires all four service checks to be known and healthy:
   a current execution quote, even when it did not become a target.
 - Owned-ledger reconciliation: the runner performs the existing GET-only fill
   and order reconciliation before building decisions. Its in-memory proof lasts
-  at most 60 seconds and is not restored from an old plan. Other economic
-  receipts or another allocation invalidate that proof at submission.
-- Worker liveness: the existing `protective_monitoring` and `action_delivery`
-  workers must have successful, current service reports. Missing, failed,
-  stopped, future or expired reports are unavailable. Each worker's existing
-  heartbeat deadline applies; a previous report is not proof of indefinite
-  process liveness. These are the shared safety workers, not the manual option
-  order route. There is no health override in cycle or model input.
+  at most 60 seconds and is not restored from an old plan. `SyncState` returns
+  the exact reconciled journal prefix. Its writes use that prefix's version;
+  intervening commands during order/fill GETs produce a version conflict and
+  require a complete new reconciliation. A later store reload cannot extend
+  this baseline. Other economic receipts or another allocation invalidate the
+  retained proof at submission. This includes idempotent command retries: their
+  returned version must match the expected prefix result, even though the
+  ordinary store permits an identical retry with a stale expected version.
+- Worker liveness: new risk requires a running `IncubationSafetyWorker` bound
+  to the exact book configuration and expected paper account. Only its executed
+  safety cycles can create live coverage; generic `RunTimerWorker` and
+  `RunActionWorker` successes cover the demo workflow and cannot authorize a
+  capped book. The worker evidence names the book, account, reconciled version
+  and immutable policy hash. It applies to every sleeve within its configured
+  symbol universe and continuous holding deadline. Uncovered assets or due
+  holding/review protection fail closed. Shared capability readiness remains
+  an additional veto, not a replacement for book coverage. Missing, failed,
+  stopped, future or expired evidence is unavailable. There is no health
+  override in cycle or model input.
 - Risk brake: the service replays the owned book and observes its marked equity
   and configured deposits. A missing risk observation is unavailable until the
   runner initializes it through the existing journal command. Owner controls,
   loss brakes and hard caps apply independently. Health recovery never clears
   pause, reduce-only, strategy breaker, kill or hard halt state.
+
+A service embeds this path by constructing `NewIncubationSafetyWorker` with an
+independent `IncubationSafetySource`, fixed symbols, maximum holding duration,
+protective fee reserves and a poll interval of 100 milliseconds to 60 seconds.
+It attaches that same object to `IncubationRunner.Safety`, runs `worker.Run`
+with a service-owned context and clock, and cancels and joins it at shutdown.
+Constructing an object or calling readiness creates no coverage. The standalone
+cycle CLI does not start this worker and therefore cannot authorize new risk;
+it can still request protective work and perform GET-only recovery. A service
+restart needs a new successful safety cycle; retained plan health is inspection
+evidence only. No schema change or persisted worker grant is involved.
+
+Each worker cycle collects quotes independently of entry requests, reconciles
+owned orders/fills, observes the existing book risk brake and evaluates holding,
+review and forward-outcome deadlines. When protection is due, it conservatively
+flattens retained sleeves through the existing reduce-only runner without
+calling strategy/model code. Protective limits include the most adverse retained
+cost model and round down to ledger precision. Missing observations keep the
+cycle unsuccessful. When protection is due, unresolved opening orders or pending
+exits also prevent success; an accepted exit is not fulfillment. This broker contract cannot cancel outstanding opening
+orders. It retains their reservations and continues reconciliation rather than
+claiming protection or releasing capital. Successful evidence expires after the
+existing heartbeat grace (10 seconds plus three poll intervals), becomes
+unavailable while the next cycle is in progress, and is withdrawn on failure or
+cancellation. These are service contract tests, not real-paper protection or
+qualification evidence.
 
 The paper adapter must implement `SubmitChecked`. The service repeats admission,
 owner controls, exact distributor-order checks, forward clocks and quote age

@@ -74,6 +74,8 @@ type IncubationRunner struct {
 	Store  IncubationStore
 	Broker cappedbook.Broker
 	BookID string
+	// Safety is a service-owned running worker, never supplied by cycle input.
+	Safety *IncubationSafetyWorker
 	now    func() time.Time
 }
 
@@ -224,8 +226,8 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			}
 			// Reconciliation is completed by the service, never asserted by input.
 			// Its receipt clock precedes decisions so newly found fills enter the view.
-			_, syncErr := client.Sync(ctx, req.DecidedAt, incubationMarks(req.Quotes))
-			rec = &incubationReconciliation{at: now, err: syncErr}
+			reconciled, syncErr := client.SyncState(ctx, req.DecidedAt, incubationMarks(req.Quotes))
+			rec = &incubationReconciliation{at: now, err: syncErr, version: reconciled.Version, allocationID: p.Rebalance.ID}
 			state, e = r.Store.CappedBook(ctx, r.BookID)
 			if e != nil {
 				return out, e
@@ -237,7 +239,6 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 					return out, e
 				}
 			}
-			rec.version = state.Version
 			views = make([]strategy.View, len(req.Strategies))
 			for i, s := range req.Strategies {
 				g := gates[i]
@@ -427,10 +428,7 @@ func (r IncubationRunner) Sync(ctx context.Context, at time.Time, quotes map[str
 		}
 	}
 	c := cappedbook.Client{Store: r.Store, Broker: r.Broker, BookID: r.BookID}
-	if _, e := c.Sync(ctx, at, marks); e != nil {
-		return account.IncubationPerformance{}, e
-	}
-	state, e := r.Store.CappedBook(ctx, r.BookID)
+	state, e := c.SyncState(ctx, at, marks)
 	if e != nil {
 		return account.IncubationPerformance{}, e
 	}
