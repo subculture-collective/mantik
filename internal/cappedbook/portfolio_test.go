@@ -3,6 +3,7 @@ package cappedbook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -84,6 +85,104 @@ func TestRebalanceRetryReturnsItsOwnDistribution(t *testing.T) {
 				t.Fatal("retry changed retained book", before.Version, after.Version, e)
 			}
 		})
+	}
+}
+
+func TestRetainedRebalanceRetrySurvivesNewFamilySearch(t *testing.T) {
+	c, b, r, marks := portfolioFixture(t)
+	ctx := context.Background()
+	first, e := c.Rebalance(ctx, r, marks)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = startExtraSearch(ctx, c.Store.(*storage.Memory)); e != nil {
+		t.Fatal(e)
+	}
+	before, e := c.load(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	retried, e := c.Rebalance(ctx, r, marks)
+	if e != nil {
+		t.Fatal("lost-response retry rechecked stale research", e)
+	}
+	wantHash, _ := strategygate.Hash(first)
+	gotHash, _ := strategygate.Hash(retried)
+	if gotHash != wantHash {
+		t.Fatal("lost-response retry changed distribution", first, retried)
+	}
+	after, e := c.load(ctx)
+	if e != nil || after.Version != before.Version {
+		t.Fatal("retained retry changed journal", e)
+	}
+	changed := r
+	changed.Targets = []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "0.5"}}}}}
+	if _, e = c.Rebalance(ctx, changed, marks); !errors.Is(e, account.ErrBookConflict) {
+		t.Fatal("changed retained request accepted", e)
+	}
+	if _, e = c.Rebalance(ctx, r, map[string]string{"SPY": "101"}); !errors.Is(e, account.ErrBookConflict) {
+		t.Fatal("changed retained marks accepted", e)
+	}
+	for _, change := range []string{"clock", "risk", "gate", "fee"} {
+		changed = r
+		changed.Sleeves = append([]allocation.Sleeve(nil), r.Sleeves...)
+		switch change {
+		case "clock":
+			changed.At = changed.At.Add(time.Minute)
+		case "risk":
+			changed.Sleeves[0].Risk = "0.03"
+		case "gate":
+			changed.Sleeves[0].GateID = "another-gate"
+		case "fee":
+			changed.Fees = map[string]string{"SPY": "1"}
+		}
+		if _, e = c.Rebalance(ctx, changed, marks); !errors.Is(e, account.ErrBookConflict) {
+			t.Fatal("changed retained request accepted", change, e)
+		}
+	}
+	next := r
+	next.ID = "new-after-search"
+	if _, e = c.Rebalance(ctx, next, marks); e == nil || !strings.Contains(e.Error(), "gate_search_history_changed") {
+		t.Fatal("new rebalance bypassed freshness", e)
+	}
+	if _, e = c.Submit(ctx, portfolioOrder(first.Orders[0]), marks); e == nil || !strings.Contains(e.Error(), "gate_search_history_changed") || b.posts != 0 {
+		t.Fatal("old distribution opened exposure after new search", e, b.posts)
+	}
+}
+
+func TestRetainedFlatRebalanceRetryUsesOriginalRoster(t *testing.T) {
+	c, _, r, marks := portfolioFixture(t)
+	ctx := context.Background()
+	if _, e := c.Rebalance(ctx, r, marks); e != nil {
+		t.Fatal(e)
+	}
+	flat := r
+	flat.ID = "flat"
+	flat.Sleeves = append([]allocation.Sleeve(nil), r.Sleeves...)
+	flat.Sleeves[0].Risk = "9" // flat requests restore the retained sleeve
+	flat.Targets = []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{}}}
+	want, e := c.Rebalance(ctx, flat, marks)
+	if e != nil {
+		t.Fatal(e)
+	}
+	next := r
+	next.ID = "changed-roster"
+	next.Sleeves = append([]allocation.Sleeve(nil), r.Sleeves...)
+	next.Sleeves[0].Risk = "0.03"
+	if _, e = c.Rebalance(ctx, next, marks); e != nil {
+		t.Fatal(e)
+	}
+	if e = startExtraSearch(ctx, c.Store.(*storage.Memory)); e != nil {
+		t.Fatal(e)
+	}
+	got, e := c.Rebalance(ctx, flat, marks)
+	if e != nil {
+		t.Fatal("retained flat retry used current roster or research", e)
+	}
+	wantHash, _ := strategygate.Hash(want)
+	gotHash, _ := strategygate.Hash(got)
+	if gotHash != wantHash {
+		t.Fatal("flat retry changed distribution", got, want)
 	}
 }
 

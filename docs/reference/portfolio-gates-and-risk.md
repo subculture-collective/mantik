@@ -97,6 +97,10 @@ limit, fee and clock. `Client.Submit` accepts only an exact retained order.
 An exact rebalance retry returns its original distribution by replaying the
 journal prefix through that request, even after a later rebalance at the same
 or a later clock. The current journal remains unchanged.
+Retry recovery compares the retained effective request, marks and clock before
+consulting research. A subsequent trial cannot block reading that response;
+changed retries still conflict. New rebalances and order reservations enforce
+family freshness transactionally alongside new trial starts.
 Quantity changes and raw orders fail before a broker POST. Independent pending
 orders cannot net or release capacity, and a sleeve waits for reconciliation
 before replacing an outstanding target. The existing journaled broker adapter

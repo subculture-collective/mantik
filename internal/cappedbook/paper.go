@@ -164,6 +164,9 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	if bookErr != nil {
 		return allocation.Distribution{}, bookErr
 	}
+	if out, retained, e := retainedRebalance(book, req, marks); retained {
+		return out, e
+	}
 	roster, rosterErr := account.PortfolioRoster(book)
 	if rosterErr != nil {
 		return allocation.Distribution{}, rosterErr
@@ -174,7 +177,6 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	}
 	reader, ok := c.Store.(interface {
 		StrategyGate(context.Context, string) (strategygate.Record, error)
-		StrategyTrialSearchTotal(context.Context, string) (int64, error)
 	})
 	if !ok {
 		return allocation.Distribution{}, errors.New("gate_registry_required")
@@ -201,13 +203,7 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 		if !g.Decision.AdmitsIncubation() {
 			return allocation.Distribution{}, errors.New("gate_evidence_ineligible")
 		}
-		n, e := reader.StrategyTrialSearchTotal(ctx, g.Declaration.Family)
-		if e != nil {
-			return allocation.Distribution{}, e
-		}
-		if n != g.Decision.SearchTotal {
-			return allocation.Distribution{}, errors.New("gate_search_history_changed")
-		}
+		// The store checks freshness under the same fence as new family starts.
 		s.Minimum = g.Decision.Minimum
 		s.Stage = "incubation"
 		s.ModelDriven = false
@@ -223,22 +219,68 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	if e != nil {
 		return allocation.Distribution{}, e
 	}
+	return rebalanceDistribution(s, req.ID)
+}
+
+// retainedRebalance recovers a response without asking research to admit it
+// again. Only authoritative admission fields are restored; the journal still
+// compares all effective request fields, marks and clocks for changed retries.
+func retainedRebalance(book account.CappedState, req allocation.RebalanceRequest, marks map[string]string) (allocation.Distribution, bool, error) {
+	for i, event := range book.Events {
+		if event.ID != req.ID {
+			continue
+		}
+		if event.Kind != "rebalance" || event.Rebalance == nil || len(req.Sleeves) != len(event.Rebalance.Sleeves) {
+			return allocation.Distribution{}, true, account.ErrBookConflict
+		}
+		prefix := book
+		prefix.Events, prefix.Version = book.Events[:i], int64(i)
+		roster, e := account.PortfolioRoster(prefix)
+		if e != nil {
+			return allocation.Distribution{}, true, e
+		}
+		flat := map[string]bool{}
+		for _, t := range req.Targets {
+			flat[t.SleeveID] = allocation.FlatTarget(t.Decision)
+		}
+		for j := range req.Sleeves {
+			s := &req.Sleeves[j]
+			if prior, exists := roster[s.ID]; exists && flat[s.ID] && prior.StrategyID == s.StrategyID {
+				*s = prior
+				continue
+			}
+			old := event.Rebalance.Sleeves[j]
+			if s.ID != old.ID || s.StrategyID != old.StrategyID || s.GateID != old.GateID || s.Stage == "qualified" {
+				return allocation.Distribution{}, true, account.ErrBookConflict
+			}
+			s.Minimum, s.Stage, s.ModelDriven = old.Minimum, old.Stage, old.ModelDriven
+		}
+		cmd := account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: marks}
+		if _, e = account.ApplyCappedCommand(book, cmd); e != nil {
+			return allocation.Distribution{}, true, e
+		}
+		out, e := rebalanceDistribution(book, req.ID)
+		return out, true, e
+	}
+	return allocation.Distribution{}, false, nil
+}
+
+func rebalanceDistribution(s account.CappedState, id string) (allocation.Distribution, error) {
 	for i, event := range s.Events {
-		if event.ID == req.ID && event.Kind == "rebalance" {
+		if event.ID == id && event.Kind == "rebalance" {
 			// Exact retries return the original sizing even after later commands.
 			s.Events = s.Events[:i+1]
 			s.Version = int64(i + 1)
-			break
+			snap, e := account.SnapshotCapped(s, event.Marks, event.At)
+			if e != nil {
+				return allocation.Distribution{}, e
+			}
+			if snap.Distribution != nil {
+				return *snap.Distribution, nil
+			}
 		}
 	}
-	snap, e := account.SnapshotCapped(s, marks, req.At)
-	if e != nil {
-		return allocation.Distribution{}, e
-	}
-	if snap.Distribution == nil {
-		return allocation.Distribution{}, errors.New("distribution_missing")
-	}
-	return *snap.Distribution, nil
+	return allocation.Distribution{}, errors.New("distribution_missing")
 }
 
 // Control records an explicit operator action. It is separate from all strategy
