@@ -51,7 +51,7 @@ func (s source) StockUniverse(_ context.Context, at time.Time) (marketdata.Unive
 	}
 	return u, nil
 }
-func run() error {
+func run() (err error) {
 	input := flag.String("input", "", "retained spycheck normalized input")
 	expected := flag.String("sha256", "", "reviewed normalized input SHA-256")
 	database := flag.String("database-env", "MANTIK_GATECHECK_DATABASE_URL", "fresh disposable PostgreSQL URL environment variable")
@@ -64,7 +64,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	raw, e := io.ReadAll(io.LimitReader(f, (32<<20)+1))
 	if e != nil {
 		return e

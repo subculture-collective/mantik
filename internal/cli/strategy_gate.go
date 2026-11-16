@@ -66,12 +66,12 @@ func runStrategyGate(ctx context.Context, args []string, out, errOut io.Writer) 
 	return emit(out, r)
 }
 
-func readGateJSON(path string, v any, limit int64) error {
+func readGateJSON(path string, v any, limit int64) (err error) {
 	f, e := os.Open(path)
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	info, e := f.Stat()
 	if e != nil {
 		return e

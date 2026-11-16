@@ -123,15 +123,16 @@ func (d Decision) Validate() error {
 			fail = true
 		}
 	}
-	if d.Status == "failed" {
+	switch d.Status {
+	case "failed":
 		if !fail || d.Stage != "idea" {
 			return ErrInvalid
 		}
-	} else if d.Status == "passed" || d.Status == "forward_only" {
+	case "passed", "forward_only":
 		if fail || d.Stage != "incubation" {
 			return ErrInvalid
 		}
-	} else {
+	default:
 		return ErrInvalid
 	}
 	return nil
