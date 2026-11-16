@@ -20,7 +20,7 @@ import (
 )
 
 func mlegFixtureOpen() MLegOpen {
-	o := MLegOpen{ExecutionPolicy: PaperAtomicNetV1, Order: MLegOrder{ClientOrderID: "condor-open", Qty: "2", OrderClass: "mleg", Type: "limit", TimeInForce: "day", LimitPrice: "-0.02"}, Chain: options.Chain{AsOf: time.Now().UTC(), Underlying: "TST"}, Structure: options.Structure{Kind: "iron_condor"}}
+	o := MLegOpen{ExecutionPolicy: PaperAtomicNetV2, Order: MLegOrder{ClientOrderID: "condor-open", Qty: "2", OrderClass: "mleg", Type: "limit", TimeInForce: "day", LimitPrice: "-0.02"}, Chain: options.Chain{AsOf: time.Now().UTC(), Underlying: "TST"}, Structure: options.Structure{Kind: "iron_condor"}}
 	o.Funding, _ = account.NewCappedState(account.DefaultCappedConfig("dedicated-options", "account-1", account.Margin, o.Chain.AsOf.Add(-time.Hour)))
 	for i, symbol := range []string{"TST261218P00000900", "TST261218P00000950", "TST261218C00001050", "TST261218C00001100"} {
 		side, n, limit := "buy", 2, .01

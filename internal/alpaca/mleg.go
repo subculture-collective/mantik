@@ -47,9 +47,13 @@ type MLegOrder struct {
 	Legs          []MLeg `json:"legs,omitempty"`
 }
 
-// PaperAtomicNetV1 binds atomic package premium accounting and a modeled $0.65
-// per contract fee allowance for three rounds. It grants no live trading authority.
+// PaperAtomicNetV1 identifies the legacy contract without reply-classification
+// crash fencing. Retained v1 lifecycles are inspection only.
 const PaperAtomicNetV1 = "paper-atomic-net-premium-fee065x3-v1"
+
+// PaperAtomicNetV2 binds atomic package premiums, a modeled $0.65 per contract
+// for three rounds, and durable reply classification. It is paper only.
+const PaperAtomicNetV2 = "paper-atomic-net-premium-fee065x3-v2"
 
 // ErrOptionQuarantined means contradictory execution custody requires inspection.
 var ErrOptionQuarantined = errors.New("option execution custody quarantined")
@@ -210,7 +214,7 @@ func (p *PaperTrader) OpenMLeg(ctx context.Context, o MLegOpen, beforePost func(
 			return OptionPaperOrder{}, errors.New("mleg requires a dedicated unused paper journal")
 		}
 	}
-	if o.ExecutionPolicy != PaperAtomicNetV1 {
+	if o.ExecutionPolicy != PaperAtomicNetV2 {
 		return OptionPaperOrder{}, ErrOptionPolicy
 	}
 	if beforePost == nil {
@@ -258,6 +262,9 @@ func (p *PaperTrader) optionSubmitChecked(ctx context.Context, r optionRequest, 
 		return p.optionLookup(ctx, r)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
+		return OptionPaperOrder{}, err
+	}
+	if err := p.optionMutationCapacity(); err != nil {
 		return OptionPaperOrder{}, err
 	}
 	if err = p.journal.writeOnce(optionIntentName(r.ClientOrderID), raw); err != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"git.subcult.tv/subculture-collective/mantik/internal/account"
 	"io"
 	"math/big"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.subcult.tv/subculture-collective/mantik/internal/account"
 )
 
 func restartOptionJournal(t *testing.T, p *PaperTrader, root string) {
@@ -32,7 +33,7 @@ func restartOptionJournal(t *testing.T, p *PaperTrader, root string) {
 }
 
 func TestMLegPolicyNeverDefaultsOrUpgradesRetainedWork(t *testing.T) {
-	for _, policy := range []string{"", "legacy-gross", "paper-atomic-net-premium-fee065x3-v2"} {
+	for _, policy := range []string{"", "legacy-gross", PaperAtomicNetV1, "paper-atomic-net-premium-fee065x3-v3"} {
 		t.Run(policy, func(t *testing.T) {
 			v, p, root := newFakeMlegVenue(t)
 			o := mlegFixtureOpen()
@@ -56,7 +57,7 @@ func TestMLegPolicyNeverDefaultsOrUpgradesRetainedWork(t *testing.T) {
 					t.Fatal(out, err)
 				}
 				upgraded := o
-				upgraded.ExecutionPolicy = PaperAtomicNetV1
+				upgraded.ExecutionPolicy = PaperAtomicNetV2
 				if _, err := p.OpenMLeg(context.Background(), upgraded, nil); !errors.Is(err, ErrJournalConflict) {
 					t.Fatal(err)
 				}

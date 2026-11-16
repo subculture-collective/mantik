@@ -224,7 +224,7 @@ func TestAtomicNetHighGrossExecutionUsesRealAdmission(t *testing.T) {
 			if allowance > available {
 				t.Fatal("unfunded package", allowance)
 			}
-			if o.ExecutionPolicy != alpaca.PaperAtomicNetV1 {
+			if o.ExecutionPolicy != alpaca.PaperAtomicNetV2 {
 				t.Fatal("implicit policy")
 			}
 			if stage == "whole_close" && state != "closed" {

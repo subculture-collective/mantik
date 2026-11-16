@@ -43,7 +43,7 @@ func admissionFixture(t *testing.T, kind string, funded bool) alpaca.MLegOpen {
 		indexes = []int{0, 5}
 		signs = []int{1, 1}
 	}
-	o := alpaca.MLegOpen{ExecutionPolicy: alpaca.PaperAtomicNetV1, Chain: c, Structure: options.Structure{Kind: kind}, Order: alpaca.MLegOrder{ClientOrderID: "open-admission", Qty: "1", Type: "limit", TimeInForce: "day", OrderClass: "mleg", LimitPrice: "0.02"}}
+	o := alpaca.MLegOpen{ExecutionPolicy: alpaca.PaperAtomicNetV2, Chain: c, Structure: options.Structure{Kind: kind}, Order: alpaca.MLegOrder{ClientOrderID: "open-admission", Qty: "1", Type: "limit", TimeInForce: "day", OrderClass: "mleg", LimitPrice: "0.02"}}
 	// indexes reference the original symbol construction list, not sorted entries.
 	symbols := []string{"TST261218P00000900", "TST261218P00000950", "TST261218P00001000", "TST261218C00001000", "TST261218C00001050", "TST261218C00001100"}
 	for i, index := range indexes {

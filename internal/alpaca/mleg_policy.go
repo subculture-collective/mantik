@@ -13,6 +13,7 @@ import (
 
 const optionQuarantine = "paper-intent-mleg-quarantine.json"
 const optionObservationPrefix = "paper-intent-mleg-observation-"
+const maxOptionObservations = 1024
 
 // optionPremiumAllowance deliberately ignores credits and price improvement.
 // Callers reserve requested units until terminal reconciliation, then charge
@@ -149,7 +150,7 @@ func (p *PaperTrader) optionObservations() (map[string]optionObservation, int, e
 			continue
 		}
 		seq++
-		if seq > 1024 || name != optionObservationName(seq) {
+		if seq > maxOptionObservations || name != optionObservationName(seq) {
 			return nil, 0, errors.New("invalid option custody sequence")
 		}
 		raw, err := p.journal.read(name, MaxBytes)
@@ -196,8 +197,11 @@ func (p *PaperTrader) optionMutationAuthority() error {
 	if err != nil {
 		return err
 	}
-	if open.ExecutionPolicy != PaperAtomicNetV1 {
+	if open.ExecutionPolicy != PaperAtomicNetV2 {
 		return ErrOptionPolicy
+	}
+	if err := p.optionPendingAuthority(); err != nil {
+		return err
 	}
 	if _, _, err := p.optionObservations(); err != nil {
 		return p.quarantineOption(err)
@@ -205,7 +209,42 @@ func (p *PaperTrader) optionMutationAuthority() error {
 	return nil
 }
 
+func (p *PaperTrader) optionPendingAuthority() error {
+	names, err := directoryNames(p.journal.root)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if strings.HasPrefix(name, optionReplyPendingPrefix) {
+			return p.quarantineOption(errors.New("option reply classification interrupted; inspection required"))
+		}
+	}
+	return nil
+}
+
 func (p *PaperTrader) optionObserve(raw []byte, r optionRequest) (OptionPaperOrder, error) {
+	pending := p.optionReply
+	o, err := p.optionRetainObservation(raw, r)
+	if pending != nil && pending.ClientOrderID == r.ClientOrderID && pending.ResponseSHA256 == Digest(string(raw)) {
+		classified := err == nil
+		if !classified {
+			_, fenceErr := p.journal.read(optionQuarantine, MaxBytes)
+			classified = fenceErr == nil
+		}
+		if classified {
+			err = errors.Join(err, p.finishOptionReply(pending))
+		}
+	}
+	if err == nil {
+		// A failed earlier response write can be followed by a coherent GET in
+		// the same call. That GET cannot classify the older reply or authorize a
+		// closed declaration before the caller reaches another mutation fence.
+		err = p.optionPendingAuthority()
+	}
+	return o, err
+}
+
+func (p *PaperTrader) optionRetainObservation(raw []byte, r optionRequest) (OptionPaperOrder, error) {
 	// GET recovery still retains raw replies when already quarantined, but cannot
 	// restore authority with a later convenient response.
 	latest, seq, err := p.optionObservations()
@@ -238,10 +277,10 @@ func (p *PaperTrader) optionObserve(raw []byte, r optionRequest) (OptionPaperOrd
 	if err != nil {
 		return o, err
 	}
-	if open.ExecutionPolicy != PaperAtomicNetV1 {
+	if open.ExecutionPolicy != PaperAtomicNetV2 {
 		return o, nil
 	}
-	if seq >= 1024 {
+	if seq >= maxOptionObservations {
 		return o, p.quarantineOption(errors.New("option custody history full"))
 	}
 	if err := p.journal.writeOnce(optionObservationName(seq+1), body); err != nil {
@@ -250,9 +289,27 @@ func (p *PaperTrader) optionObserve(raw []byte, r optionRequest) (OptionPaperOrd
 	return o, nil
 }
 
+// Existing GET recovery requires no new authority. A new external mutation must
+// have room for its resulting observation before any intent or wire effect.
+func (p *PaperTrader) optionMutationCapacity() error {
+	_, n, err := p.optionObservations()
+	if err != nil {
+		return p.quarantineOption(err)
+	}
+	if n >= maxOptionObservations {
+		return errors.Join(ErrOptionQuarantined, errors.New("option custody history full; inspection only"))
+	}
+	return nil
+}
+
 // Dedicated option journals cannot use the stock API to bypass option custody.
 func (p *PaperTrader) requireStockJournal() error {
-	if _, err := p.journal.read(optionLifecycle, MaxBytes); err == nil {
+	if raw, err := p.journal.read(optionLifecycle, MaxBytes); err == nil {
+		// This filename is also the ordinary intent for a valid stock client ID.
+		var stock StockOrder
+		if json.Unmarshal(raw, &stock) == nil && stock.ClientOrderID == "mleg-lifecycle" && stock.Validate() == nil {
+			return nil
+		}
 		return errors.New("dedicated option journal requires option lifecycle actions")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

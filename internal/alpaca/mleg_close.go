@@ -304,6 +304,9 @@ func (p *PaperTrader) optionCancelTerminal(ctx context.Context, r optionRequest,
 	if err := p.optionMutationAuthority(); err != nil {
 		return o, err
 	}
+	if err := p.optionMutationCapacity(); err != nil {
+		return o, err
+	}
 	_, status, err := p.request(ctx, http.MethodDelete, "/v2/orders/"+url.PathEscape(o.ID), nil)
 	if err != nil || status != 204 && status != 422 {
 		return o, ErrOptionPending

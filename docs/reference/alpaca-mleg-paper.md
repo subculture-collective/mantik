@@ -15,15 +15,16 @@ It is not live trading, profitability evidence or forward qualification.
 
 The opening JSON has five fields, matching `alpaca.MLegOpen`:
 
-- `ExecutionPolicy`: exactly `"paper-atomic-net-premium-fee065x3-v1"`
-  (`alpaca.PaperAtomicNetV1`). Mandatory for every new lifecycle. This immutable
+- `ExecutionPolicy`: exactly `"paper-atomic-net-premium-fee065x3-v2"`
+  (`alpaca.PaperAtomicNetV2`). Mandatory for every new lifecycle. This immutable
   paper-only policy binds atomic net premium accounting and a modeled fee
   allowance of $0.65 per requested contract for three rounds (opening, whole
   close and fallback). There are no configurable fee or netting switches.
   Missing and unknown policies cannot submit. Retained legacy/unknown work
   permits GET inspection only: no new whole/fallback POST, cancellation DELETE,
   or automatic closed declaration. An exact retry cannot change the policy;
-  adding a policy to retained legacy work conflicts.
+  adding a policy to retained legacy work conflicts. The earlier v1 contract
+  lacks the durable reply-classification protocol and remains inspection only.
 - `Order`: `client_order_id`, integer-string strategy `qty`, `type: "limit"`,
   `time_in_force: "day"` or `"gtc"`, signed decimal-string `limit_price`,
   `order_class: "mleg"`, and `legs`. Each leg has `symbol`, positive
@@ -104,6 +105,19 @@ retaining the lifecycle and sending the wire intent. Changed requests conflict.
 A refused admission consumes that identity; no subsequent retry can submit it.
 The dedicated option journal also refuses stock submissions and generic stock
 cancellation, so those actions cannot bypass the lifecycle fences.
+An ordinary stock intent with client ID `mleg-lifecycle` is distinguished by
+its validated stock payload; its retry and cancellation remain available.
+
+Before each v2 option-order POST or client-ID GET, the adapter retains a
+`paper-intent-mleg-reply-pending-*` classification marker. A complete successful
+reply clears that marker only after a verified observation or persistent
+quarantine is durable. Known transport failures, incomplete responses and
+non-success HTTP results provide no execution witness and leave ordinary
+GET-only recovery available. If the process stops before classification
+finishes, the marker survives restart and rollover. Later GETs can retain raw
+inspection evidence but cannot restore POST, DELETE or closed-declaration
+authority. Interrupted classification requires operator inspection; this route
+provides no automatic fence override, even if the unprocessed reply was valid.
 
 All raw HTTP responses use the existing `paper-response-*` records: method,
 path, status, receipt clock, SHA-256, completeness flag and original bytes.
@@ -129,15 +143,19 @@ restore POST, DELETE or closed-declaration authority, even after restart or
 rollover. Raw GET inspection remains available. Transport uncertainty, 404 and
 5xx remain ordinary GET-only recovery, not contradictions by themselves.
 Normalized observations use retained `paper-intent-mleg-observation-*` records;
-unchanged responses add none. More than 1,024 changed observations require
-manual inspection; the route stops rather than dropping custody history.
+unchanged responses add none. At 1,024 observations, new POST and DELETE
+operations are refused before transmission. Unchanged GET inspection remains
+available; a changed reply that cannot fit stops with quarantine rather than
+dropping custody history. Classification markers are removed after ordinary
+completion, so unchanged inspection does not accumulate marker records.
 
 Use the existing `fills` action with an explicit lower time bound to retain
 original activity records and venue fee fields. Order cumulative fill quantities
 control close sizing; this route does not assert complete fee reconciliation or
 ledger equity from those order snapshots. Archive the journal and retain its
 archive SHA-256 before handing evidence off. Rollover exports raw responses and
-keeps every lifecycle, request, refusal, observation, quarantine and close-plan
+keeps every lifecycle, request, refusal, observation, pending classification,
+quarantine and close-plan
 fence in the active journal. No migration or development/production database is required.
 
 ## Whole close and fallback

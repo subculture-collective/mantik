@@ -57,7 +57,8 @@ quotes and zero fees or slippage.
   whole closes before a shorts-first fallback. Package limits and fixed modeled
   fees bound the paper budget; separate orders cannot spend package credits.
   Legacy policy inputs remain inspection-only and contradictory fill evidence
-  stays quarantined across restart.
+  stays quarantined across restart. Interrupted reply classification also blocks
+  mutations until inspected; a later GET cannot clear that fence.
   Synthetic tests cover recovery and protection; real-paper acceptance evidence
   remains a separate regular-session check.
 - **Paper stock orders**: the separate [Alpaca paper adapter](docs/reference/alpaca-paper.md)
