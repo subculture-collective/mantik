@@ -15,6 +15,7 @@ import (
 	"git.subcult.tv/subculture-collective/mantik/internal/alpaca"
 	"git.subcult.tv/subculture-collective/mantik/internal/cappedbook"
 	"git.subcult.tv/subculture-collective/mantik/internal/executioncost"
+	"git.subcult.tv/subculture-collective/mantik/internal/forward"
 	"git.subcult.tv/subculture-collective/mantik/internal/storage"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategy"
 	"git.subcult.tv/subculture-collective/mantik/internal/strategygate"
@@ -33,6 +34,7 @@ type IncubationStore interface {
 // supply targets through the same interface; they cannot set stage or budgets.
 type IncubatingStrategy struct {
 	SleeveID, GateID, Risk string
+	ForwardDeclarationID   string
 	Strategy               strategy.Strategy
 	Source                 strategy.BarSource
 	Assets                 []string
@@ -126,7 +128,16 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 				return out, e
 			}
 		}
-		p := account.IncubationPlan{Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}
+		bindings := account.ForwardBindings(state)
+		for _, s := range req.Strategies {
+			if s.ForwardDeclarationID != "" {
+				if bindings[s.SleeveID] != "" && bindings[s.SleeveID] != s.ForwardDeclarationID {
+					return out, forward.ErrConflict
+				}
+				bindings[s.SleeveID] = s.ForwardDeclarationID
+			}
+		}
+		p := account.IncubationPlan{ForwardDeclarations: bindings, Costs: map[string]executioncost.Model{}, InputSHA256: req.InputSHA256, DecidedAt: req.DecidedAt, Quotes: req.Quotes, Rebalance: allocation.RebalanceRequest{ID: "inc-" + req.ID, At: req.ExecuteAt, Limits: req.Limits, Fees: req.Fees}}
 		roster, err := account.PortfolioRoster(state)
 		if err != nil {
 			return out, err
@@ -193,15 +204,48 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 			if err != nil {
 				return out, err
 			}
-			view, err := strategy.Build(ctx, s.Strategy.Spec(), s.Source, req.DecidedAt, s.Assets, book)
-			if err != nil {
-				return out, err
+			var d strategy.Decision
+			holdExposure := false
+			controlled := false
+			if id := bindings[s.SleeveID]; id != "" {
+				fs, ok := r.Store.(forward.Store)
+				if !ok {
+					return out, errors.New("forward declaration storage unavailable")
+				}
+				record, e := fs.ForwardDeclaration(ctx, id)
+				if e != nil {
+					return out, e
+				}
+				decl := record.Declaration
+				if decl.BookID != r.BookID || decl.SleeveID != s.SleeveID || decl.GateID != s.GateID || decl.StrategyID != g.Decision.StrategyID || req.DecidedAt.Before(record.DeclaredAt) {
+					return out, forward.ErrConflict
+				}
+				n, e := r.Store.StrategyTrialSearchTotal(ctx, decl.Family)
+				if e != nil {
+					return out, e
+				}
+				opened, e := account.ForwardHoldingOpened(state, s.SleeveID, req.DecidedAt)
+				if e != nil {
+					return out, e
+				}
+				a, b := record.Clocks(req.DecidedAt, n, opened), record.Clocks(req.ExecuteAt, n, opened)
+				if !a.EntryEligible || !b.EntryEligible || !opened.IsZero() && opened.Before(decl.WindowStart) {
+					controlled = true
+					d.State = book.State
+					holdExposure = a.OutcomeOpen && b.OutcomeOpen && !a.HoldExpired && !b.HoldExpired && !opened.IsZero() && !opened.Before(decl.WindowStart)
+				}
 			}
-			d, err := strategy.Decide(s.Strategy, view)
-			if err != nil {
-				return out, err
+			if !controlled {
+				view, e := strategy.Build(ctx, s.Strategy.Spec(), s.Source, req.DecidedAt, s.Assets, book)
+				if e != nil {
+					return out, e
+				}
+				d, err = strategy.Decide(s.Strategy, view)
+				if err != nil {
+					return out, err
+				}
 			}
-			target := allocation.TargetDecision{KeepPositions: d.KeepPositions}
+			target := allocation.TargetDecision{KeepPositions: d.KeepPositions, HoldExposure: holdExposure}
 			for _, t := range d.Targets {
 				if _, ok := req.Quotes[t.Asset]; !ok {
 					return out, errors.New("target missing execution quote")
@@ -228,7 +272,11 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 		}
 		plan = state.Events[len(state.Events)-1].Incubation
 	}
-	client.Broker = incubationSubmissionBroker{Broker: r.Broker, plan: *plan, now: r.now}
+	submission := incubationSubmissionBroker{Broker: r.Broker, plan: *plan, now: r.now}
+	if len(plan.ForwardDeclarations) > 0 {
+		submission.forwardCheck = r.checkForwardSubmission
+	}
+	client.Broker = submission
 	out.Plan = *plan
 	marks := incubationMarks(plan.Quotes)
 	dist, e := client.Rebalance(ctx, plan.Rebalance, marks)
@@ -388,12 +436,13 @@ func IncubationInputHash(v any) (string, error) { return strategygate.Hash(v) }
 // reservation work. A slow store cannot make an expired quote executable.
 type incubationSubmissionBroker struct {
 	cappedbook.Broker
-	plan account.IncubationPlan
-	now  func() time.Time
+	plan         account.IncubationPlan
+	now          func() time.Time
+	forwardCheck func(context.Context, alpaca.StockOrder, time.Time) error
 }
 
 func (b incubationSubmissionBroker) Submit(ctx context.Context, o alpaca.StockOrder) (alpaca.PaperOrder, error) {
-	check := func() error { return b.checkSubmission(o) }
+	check := func() error { return b.checkSubmission(ctx, o) }
 	if broker, ok := b.Broker.(interface {
 		SubmitChecked(context.Context, alpaca.StockOrder, func() error) (alpaca.PaperOrder, error)
 	}); ok {
@@ -405,7 +454,7 @@ func (b incubationSubmissionBroker) Submit(ctx context.Context, o alpaca.StockOr
 	return b.Broker.Submit(ctx, o)
 }
 
-func (b incubationSubmissionBroker) checkSubmission(o alpaca.StockOrder) error {
+func (b incubationSubmissionBroker) checkSubmission(ctx context.Context, o alpaca.StockOrder) error {
 	at := time.Now().UTC()
 	if b.now != nil {
 		at = b.now()
@@ -420,5 +469,43 @@ func (b incubationSubmissionBroker) checkSubmission(o alpaca.StockOrder) error {
 	if e := account.ValidateIncubationQuote(q, b.plan.DecidedAt, at); e != nil {
 		return e
 	}
+	if b.forwardCheck != nil {
+		return b.forwardCheck(ctx, o, at)
+	}
 	return nil
+}
+
+// Recheck a bound entry at the actual submission clock. Reductions remain
+// possible after expiry; a slow reservation cannot extend the forward window.
+func (r IncubationRunner) checkForwardSubmission(ctx context.Context, o alpaca.StockOrder, at time.Time) error {
+	state, e := r.Store.CappedBook(ctx, r.BookID)
+	if e != nil {
+		return e
+	}
+	bindings := account.ForwardBindings(state)
+	if len(bindings) == 0 {
+		return nil
+	}
+	for _, event := range state.Events {
+		if event.Kind != "portfolio_reserve" || event.Order == nil || event.Order.ID != o.ClientOrderID {
+			continue
+		}
+		order := event.Order
+		if order.ReduceOnly || bindings[order.SleeveID] == "" {
+			return nil
+		}
+		fs, ok := r.Store.(forward.Store)
+		if !ok {
+			return errors.New("forward declaration storage unavailable")
+		}
+		eligibility, e := fs.ForwardEligibility(ctx, bindings[order.SleeveID], at)
+		if e != nil {
+			return e
+		}
+		if !eligibility.EntryEligible {
+			return errors.New("forward eligibility expired before submission")
+		}
+		return nil
+	}
+	return errors.New("forward submission has no retained reservation")
 }

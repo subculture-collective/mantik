@@ -151,3 +151,5 @@ broker. The disposable SQL contract checks plan/model persistence, replay and
 stale-search rejection. These tests exercise the running path; they establish no
 real market observation, broker connectivity, protected position, performance or
 qualification result. No external order is part of this implementation proof.
+
+Canonical strategy forward windows use the separate [forward declaration contract](forward-declarations.md). It binds prospective clocks, its own benchmark, minimums and actual trial-family search bound to the capped-book runner, with multiweek holds and no qualification credit. Legacy threshold replay retains its original rules.

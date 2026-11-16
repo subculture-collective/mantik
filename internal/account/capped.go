@@ -374,7 +374,7 @@ func replay(s CappedState) (*bookReplay, error) {
 				r.targets = map[string]allocation.TargetDecision{}
 			}
 			for _, t := range c.Rebalance.Targets {
-				if !t.Decision.KeepPositions {
+				if !t.Decision.KeepPositions && !t.Decision.HoldExposure {
 					r.targets[t.SleeveID] = t.Decision
 				}
 			}

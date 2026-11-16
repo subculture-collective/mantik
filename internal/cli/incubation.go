@@ -31,6 +31,7 @@ type incubationInput struct {
 }
 type incubationStrategyInput struct {
 	SleeveID, GateID, Risk string
+	ForwardDeclarationID   string
 	Library                *library.Config
 	Expression             *strategyspec.Definition
 	Assets                 []string
@@ -85,7 +86,7 @@ func incubationRequest(in incubationInput) (service.IncubationRequest, error) {
 		if e != nil {
 			return req, e
 		}
-		req.Strategies = append(req.Strategies, service.IncubatingStrategy{SleeveID: entry.SleeveID, GateID: entry.GateID, Risk: entry.Risk, Strategy: s, Source: incubationSource{entry}, Assets: entry.Assets})
+		req.Strategies = append(req.Strategies, service.IncubatingStrategy{SleeveID: entry.SleeveID, ForwardDeclarationID: entry.ForwardDeclarationID, GateID: entry.GateID, Risk: entry.Risk, Strategy: s, Source: incubationSource{entry}, Assets: entry.Assets})
 	}
 	return req, nil
 }

@@ -223,3 +223,5 @@ Daily stock history can be collected by the opt-in [`serve` daily-bar worker](do
 The [SPY engine check](docs/reference/spy-engine-check.md) compares cash/margin
 accounting with scheduled deposits against an independent reference on the
 manifest-verified 2016-to-date history.
+
+Canonical strategy forward windows use the separate [forward declaration contract](docs/reference/forward-declarations.md). It binds prospective clocks, its own benchmark, minimums and actual trial-family search bound to the capped-book runner, with multiweek holds and no qualification credit. Legacy threshold replay retains its original rules.

@@ -28,12 +28,14 @@ type IncubationDecision struct {
 // IncubationPlan is recorded before sizing or submitting. Quotes model immediate
 // execution at Rebalance.At, independently of the venue's later fill clock.
 type IncubationPlan struct {
-	Costs       map[string]executioncost.Model
-	InputSHA256 string
-	DecidedAt   time.Time
-	Rebalance   allocation.RebalanceRequest
-	Quotes      map[string]IncubationQuote
-	Decisions   []IncubationDecision
+	// ForwardDeclarations binds optional prospective evidence clocks by sleeve.
+	ForwardDeclarations map[string]string `json:",omitempty"`
+	Costs               map[string]executioncost.Model
+	InputSHA256         string
+	DecidedAt           time.Time
+	Rebalance           allocation.RebalanceRequest
+	Quotes              map[string]IncubationQuote
+	Decisions           []IncubationDecision
 }
 
 // ValidateIncubationQuote enforces the fixed 60-second execution freshness bound.

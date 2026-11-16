@@ -390,3 +390,8 @@ var StrategyGates string
 //
 //go:embed 0123_research_desk_events.sql
 var ResearchDeskEvents string
+
+// ForwardDeclarations freezes prospective windows for canonical strategies.
+//
+//go:embed 0124_forward_declarations.sql
+var ForwardDeclarations string
