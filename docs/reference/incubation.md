@@ -67,8 +67,10 @@ retained eligible gate. A
 historical strategy needs a `passed` decision classified as
 `historical_market_unqualified`. Synthetic and legacy unclassified decisions are
 ineligible. Runtime model strategies use the explicit `forward_only` gate route,
-never an invented historical pass. The service interface accepts such compiled
-strategies; the stock CLI compiles library and expression recipes only.
+never an invented historical pass. The stock CLI compiles library and expression
+recipes and can load a retained analyst receipt through `AnalystCycleID`.
+The receipt path uses the [model analyst contract](model-analyst.md), including
+its frozen owner/source bindings and code-assigned targets; it launches no model.
 
 The whole roster is checked before any strategy runs. An existing sleeve owner
 whose gate search count has changed may still evaluate its strategy, but only a
