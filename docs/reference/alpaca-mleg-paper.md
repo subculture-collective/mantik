@@ -73,9 +73,11 @@ equity below the $2,000 margin threshold, invoking cash-account permissions.
 Only genuinely recorded scheduled deposits may increase that local funding.
 An ample Alpaca paper balance never changes a refusal. Find a structure that
 passes the existing caps; do not raise limits or invent deposits to force proof.
-For a real paper exercise, retain the actual opening clock and capital evidence
-and use receipt-mode funding. Never backdate an opening to manufacture elapsed
-deposit slots or relabel a legacy synthetic ledger as real funding.
+For a paper exercise, retain the actual opening clock and declared capital
+provenance. Explicit simulated PAPER funding may use `synthetic_schedule`;
+`owner_receipts` is the separate mode for actual owner-attested funding. Never
+backdate an opening to manufacture elapsed deposit slots or relabel a synthetic
+ledger as real funding.
 
 ## Intent, recovery and audit custody
 
