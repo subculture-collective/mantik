@@ -82,6 +82,9 @@ type optionLot struct {
 	structure         options.Structure
 	filled            []bool
 	cancelled, closed bool
+	reserve           *big.Rat
+	coveredShares     int
+	reserveSpot       float64
 }
 type optionCredit struct {
 	date   time.Time
@@ -91,7 +94,7 @@ type optionCredit struct {
 // OptionBook is a single-owner indicative simulator. Submit reserves an opening
 // structure; Step fills at most one whole leg on a later session, in protected
 // order. Close atomically unwinds filled legs, shorts first, on later bars.
-// State is in memory; this is not the durable qualified/live path of issue #85.
+// State is in memory; issue #85 owns the durable paper-broker path.
 type OptionBook struct {
 	cfg     OptionConfig
 	cash    *big.Rat
@@ -154,11 +157,7 @@ func (b *OptionBook) Submit(ctx context.Context, at time.Time, id, asset string,
 	used := 0
 	for _, l := range b.lots {
 		if l.asset == asset && !l.closed && (!l.cancelled || hasOptionFill(l)) {
-			lr, e := options.Analyze(c, l.structure, b.cfg.FeePerContract)
-			if e != nil {
-				return optionRefusal(e), nil
-			}
-			used += lr.CoveredShares
+			used += l.coveredShares
 		}
 	}
 	if r.CoveredShares > b.cfg.Stocks[asset]-used {
@@ -166,6 +165,8 @@ func (b *OptionBook) Submit(ctx context.Context, at time.Time, id, asset string,
 	}
 	l := &optionLot{id: id, asset: asset, decided: at, structure: s, filled: make([]bool, len(s.Legs))}
 	l.structure.Legs = slices.Clone(s.Legs)
+	l.reserve, l.coveredShares = b.hold(l, r, c), r.CoveredShares
+	l.reserveSpot = c.Spot.Price
 	b.lots = append(b.lots, l)
 	reasons, err := b.check(chains)
 	if err != nil || len(reasons) > 0 {
@@ -271,11 +272,7 @@ func (b *OptionBook) Close(ctx context.Context, at time.Time, id string) (Option
 		if other == l || other.closed || other.cancelled && !hasOptionFill(other) {
 			continue
 		}
-		r, err := options.Analyze(chains[other.asset], other.structure, b.cfg.FeePerContract)
-		if err != nil {
-			return OptionResult{}, err
-		}
-		available.Sub(available, b.hold(other, r, chains[other.asset]))
+		available.Sub(available, optionLotHold(other, chains[other.asset]))
 	}
 	if buys.Cmp(available) > 0 || debit.Cmp(b.cash) > 0 {
 		return refused("option_close_unfunded"), nil
@@ -314,11 +311,7 @@ func (b *OptionBook) Snapshot(ctx context.Context, at time.Time) (OptionSnapshot
 		if l.closed || l.cancelled && !hasOptionFill(l) {
 			continue
 		}
-		r, err := options.Analyze(chains[l.asset], l.structure, b.cfg.FeePerContract)
-		if err != nil {
-			return OptionSnapshot{}, err
-		}
-		reserved.Add(reserved, b.hold(l, r, chains[l.asset]))
+		reserved.Add(reserved, optionLotHold(l, chains[l.asset]))
 		pending := false
 		for i, v := range l.filled {
 			if v {
@@ -448,8 +441,15 @@ func (b *OptionBook) observe(ctx context.Context, at time.Time, extra string) (m
 		if l.closed || l.cancelled && !hasOptionFill(l) {
 			continue
 		}
-		if _, err := options.Analyze(chains[l.asset], l.structure, b.cfg.FeePerContract); err != nil {
-			return nil, err
+		for i, filled := range l.filled {
+			if !filled {
+				continue
+			}
+			c := chains[l.asset]
+			e := optionEntry(c, l.structure.Legs[i].Symbol)
+			if e.Symbol == "" || !optionFinite(e.Close) || e.Close <= 0 || e.PriceOccurredAt.IsZero() || e.PriceObservedAt.IsZero() || e.PriceOccurredAt.After(c.Spot.At) || e.PriceOccurredAt.In(newYork).Format(time.DateOnly) != c.Spot.Date || e.FeedSelection != "provider_default_unverified" {
+				return nil, errors.New("option_held_price_unavailable")
+			}
 		}
 	}
 	eq := b.equity(chains)
@@ -484,8 +484,22 @@ func (b *OptionBook) hold(l *optionLot, r options.StructureRisk, c options.Chain
 	}
 	return optionRat(hold)
 }
+
+// Keep the approved hold even when a cancelled, unused contract has no estimate.
+// Covered stock can appreciate; both complete and partial loss can grow by at
+// most shares times that change. Never release collateral merely on a mark.
+func optionLotHold(l *optionLot, c options.Chain) *big.Rat {
+	hold := new(big.Rat).Set(l.reserve)
+	if l.coveredShares > 0 && c.Spot.Price > l.reserveSpot {
+		change := new(big.Rat).Sub(optionRat(c.Spot.Price), optionRat(l.reserveSpot))
+		hold.Add(hold, change.Mul(change, big.NewRat(int64(2*l.coveredShares), 1)))
+	}
+	return hold
+}
+
 func (b *OptionBook) check(chains map[string]options.Chain) ([]string, error) {
-	eq := b.equity(chains)
+	markedEquity := b.equity(chains)
+	eq := new(big.Rat).Set(markedEquity)
 	cash := b.settled()
 	gross := new(big.Rat)
 	perAsset := map[string]*big.Rat{}
@@ -501,11 +515,7 @@ func (b *OptionBook) check(chains map[string]options.Chain) ([]string, error) {
 			continue
 		}
 		c := chains[l.asset]
-		r, err := options.Analyze(c, l.structure, b.cfg.FeePerContract)
-		if err != nil {
-			return nil, err
-		}
-		hold := b.hold(l, r, c)
+		hold := optionLotHold(l, c)
 		cash.Sub(cash, hold)
 		gross.Add(gross, hold)
 		if perAsset[l.asset] == nil {
@@ -518,6 +528,9 @@ func (b *OptionBook) check(chains map[string]options.Chain) ([]string, error) {
 				continue
 			}
 			e := optionEntry(c, leg.Symbol)
+			if err := options.UsableGreeks(e); err != nil {
+				return nil, err
+			}
 			n := math.Abs(float64(leg.Contracts * 100))
 			d += n * math.Abs(e.Greeks.Delta) * c.Spot.Price
 			g += n * e.Greeks.Gamma * .5 * c.Spot.Price * c.Spot.Price
@@ -529,6 +542,13 @@ func (b *OptionBook) check(chains map[string]options.Chain) ([]string, error) {
 					return nil, errors.New("option_nonfinite_projection")
 				}
 				eq.Sub(eq, optionRat(adverse))
+				// Filled lots keep their reserve. Pending premiums and fees need
+				// separate cash, and unreceived sale proceeds cannot fund them.
+				fee := float64(absOptionContracts(leg.Contracts)) * b.cfg.FeePerContract
+				cash.Sub(cash, optionRounded(fee, true))
+				if leg.Contracts > 0 {
+					cash.Sub(cash, new(big.Rat).Mul(big.NewRat(int64(leg.Contracts*100), 1), optionRat(leg.Limit)))
+				}
 			}
 		}
 		exposures = append(exposures, risk.OptionExposure{Underlying: l.asset, Delta: optionDollars(d), Gamma: optionDollars(g), Vega: optionDollars(v), Theta: optionDollars(t), Reserve: render(hold)})
@@ -542,6 +562,11 @@ func (b *OptionBook) check(chains map[string]options.Chain) ([]string, error) {
 	reasons, err := risk.Check(b.brake, risk.OrderView{StrategyID: b.cfg.StrategyID, Equity: render(eq), CashAfter: render(cash), Gross: render(gross), Position: render(position), Sleeve: render(gross)})
 	if err != nil {
 		return nil, err
+	}
+	// A possible execution loss cannot lower the cash floor. Conservative bar
+	// fills cannot improve current marked equity, so cover its full 20% first.
+	if new(big.Rat).Mul(cash, big.NewRat(5, 1)).Cmp(markedEquity) < 0 && !slices.Contains(reasons, "risk_cash_reserve") {
+		reasons = append(reasons, "risk_cash_reserve")
 	}
 	if cash.Sign() < 0 {
 		reasons = append(reasons, "option_insufficient_settled_reserve")

@@ -53,7 +53,9 @@ at least their entire strike obligation plus round-trip fees, without assuming
 an unfilled premium will arrive. Filled lots retain the full reserve in
 addition to premiums already paid. This intentionally uses more collateral
 than the minimum expiry loss. Independently pending orders get no netting,
-protection or proceeds credit from one another.
+protection or proceeds credit from one another. The approved hold remains after
+entry or cancellation. Covered stock appreciation increases that hold to cover
+the added complete and partial loss; falling marks do not release it.
 
 ## Fixed Greek limits
 
@@ -78,7 +80,10 @@ remaining independent orders contribute gross exposure; opposing legs do not
 cancel it. Two asset IDs cannot map to the same underlying within one book.
 Equity is marked from local cash and holdings, reduced by remaining opening
 fees and adverse limit-versus-mark gaps. Unreceived short proceeds never fund
-another order.
+another order. Projected free cash also subtracts each independent pending buy
+premium at its limit and every pending entry fee, in addition to the retained
+hold. The 20% cash floor covers current marked equity before possible execution
+losses reduce it.
 
 `risk.CheckOptions` returns every breached cap in a deterministic order:
 `risk_option_delta`, `risk_option_gamma`, `risk_option_vega`,
@@ -118,7 +123,9 @@ explicit spot and pricing assumptions required by `options.Read`.
    remove its positions or permit its unfilled shorts to execute.
 5. `Close(ctx, laterAt, id)` validates and prices all filled legs before any
    cash changes, unwinds shorts before protection, and cancels the remainder.
-   No opening Greek/brake permission is needed to exit. All closing buy debits
+   Cancelled, unfilled contracts need no current estimate for snapshots or exits;
+   held contracts still need valid prices. No opening Greek/brake permission is
+   needed to exit. All closing buy debits
    must fit settled cash after other lots' reservations; same-close sale
    proceeds cannot finance buys. An unfunded close is refused atomically.
 6. `Snapshot` returns cash, settled cash, marked equity, reserved dollars,
@@ -141,7 +148,8 @@ one owner per book. Source errors are returned, and business refusals carry
 reasons. Closed IDs cannot be reused. There is no recovery, expiry settlement,
 assignment, exercise, American-option qualification, volume participation or
 broker reconciliation here. Expired/missing contracts stop this simulator;
-they never become zero liabilities. Issue #85 owns qualified submission.
+they never become zero liabilities. Issue #85 owns paper-broker submission;
+qualification and promotion remain separate work.
 
 The unit tests use synthetic chains and retained in-memory indicative records.
 They check worked payoff losses, all supported shapes, partial-fill bounds,
