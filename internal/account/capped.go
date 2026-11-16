@@ -3,6 +3,7 @@ package account
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"math/big"
 	"regexp"
 	"slices"
@@ -62,9 +63,11 @@ type BookCommand struct {
 	ReviewDeclaration                       *ReviewDeclaration `json:",omitempty"`
 	Review                                  *StrategyReview    `json:",omitempty"`
 	ModelFill                               *IncubationFill    `json:",omitempty"`
+	RiskCheckpoint                          *RiskCheckpoint    `json:",omitempty"`
 }
 
-// CappedState is an append-only replayable ledger. Version is its event count.
+// CappedState is a bounded replay projection of the immutable command history.
+// Version counts original commands, including archived risk observations.
 type CappedState struct {
 	Config  CappedConfig
 	Version int64
@@ -293,7 +296,7 @@ func replay(s CappedState) (*bookReplay, error) {
 	if e := s.Config.validate(); e != nil {
 		return nil, e
 	}
-	if s.Version != int64(len(s.Events)) || len(s.Events) > 4096 {
+	if s.Version != CappedPrefix(s, len(s.Events)).Version || len(s.Events) > 4096 {
 		return nil, errors.New("invalid book history size")
 	}
 	cash, _ := bookRat(s.Config.OpeningCash)
@@ -302,7 +305,7 @@ func replay(s CappedState) (*bookReplay, error) {
 	last := s.Config.OpenedAt
 	financialEvents := []BookCommand{}
 	for _, c := range s.Events {
-		if c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
+		if c.RiskCheckpoint != nil && c.Kind != "risk_checkpoint" || c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
 			return nil, errors.New("book payload differs from event kind")
 		}
 		if c.ID == "" || len(c.ID) > 128 || ids[c.ID] || c.At.Before(last) || c.At.IsZero() {
@@ -331,6 +334,13 @@ func replay(s CappedState) (*bookReplay, error) {
 				return nil, err
 			}
 			r.deposits++
+		case "risk_checkpoint":
+			if err := validateRiskCheckpoint(c); err != nil {
+				return nil, err
+			}
+			r.risk = c.RiskCheckpoint.State
+			r.risk.Breakers = maps.Clone(r.risk.Breakers)
+			r.risk.Retired = maps.Clone(r.risk.Retired)
 		case "risk_observe":
 			if e := observePortfolio(s.Config, r, c.Marks, c.At); e != nil {
 				return nil, e
@@ -485,9 +495,14 @@ var bookSymbol = regexp.MustCompile(`^[A-Z][A-Z0-9.-]{0,19}$`)
 
 var hashText = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// ApplyCappedCommand returns a detached state. Exact event retries are idempotent;
-// changed retries conflict. A failed command never changes the previous state.
+// ApplyCappedCommand returns a detached replay projection. Retries retained in
+// that projection are idempotent; the durable store checks archived originals
+// before calling this function. A failed command never changes the input.
 func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
+	// A checkpoint is a replay artifact, never a caller-supplied risk grant.
+	if c.Kind == "risk_checkpoint" || c.RiskCheckpoint != nil {
+		return s, errors.New("risk checkpoint is not a command")
+	}
 	if c.ReviewDeclaration != nil && c.Kind != "review_declare" || c.Review != nil && c.Kind != "strategy_review" || c.Incubation != nil && c.Kind != "incubation_plan" || c.ModelFill != nil && c.Kind != "fill" {
 		return s, errors.New("book payload differs from event kind")
 	}
@@ -501,6 +516,9 @@ func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
 	}
 	for _, old := range out.Events {
 		if old.ID == c.ID {
+			if old.RiskCheckpoint != nil {
+				old = old.RiskCheckpoint.Last
+			}
 			a, e := json.Marshal(old)
 			if e != nil {
 				return s, e
@@ -522,6 +540,12 @@ func ApplyCappedCommand(s CappedState, c BookCommand) (CappedState, error) {
 	var copied BookCommand
 	if e = json.Unmarshal(raw, &copied); e != nil {
 		return s, e
+	}
+	if c.Kind == "risk_observe" {
+		out, e = compactTrailingRisk(out)
+		if e != nil {
+			return s, e
+		}
 	}
 	out.Events = append(out.Events, copied)
 	out.Version++

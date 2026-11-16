@@ -173,7 +173,7 @@ func TestPostgresContractsForwardDeclarations(t *testing.T) {
 		t.Fatal("legacy changed", e)
 	}
 	var maximum int
-	if e = p.pool.QueryRow(ctx, "SELECT max(version) FROM mantik_schema").Scan(&maximum); e != nil || maximum != 125 {
+	if e = p.pool.QueryRow(ctx, "SELECT max(version) FROM mantik_schema").Scan(&maximum); e != nil || maximum != expectedSchemaVersion {
 		t.Fatal(maximum, e)
 	}
 	for _, sql := range []string{"UPDATE mantik_forward_declarations SET family=family", "DELETE FROM mantik_forward_declarations", "TRUNCATE mantik_forward_declarations"} {

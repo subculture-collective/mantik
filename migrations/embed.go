@@ -400,3 +400,8 @@ var ForwardDeclarations string
 //
 //go:embed 0125_strategy_trial_batches.sql
 var StrategyTrialBatches string
+
+// CappedBookHistory retains immutable commands behind bounded risk replay heads.
+//
+//go:embed 0126_capped_book_history.sql
+var CappedBookHistory string

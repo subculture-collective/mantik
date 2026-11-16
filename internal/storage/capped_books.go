@@ -22,7 +22,7 @@ type CappedBookStore interface {
 func copyCapped(s account.CappedState) (account.CappedState, error) {
 	raw, e := json.Marshal(s)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	var out account.CappedState
 	e = json.Unmarshal(raw, &out)
@@ -37,19 +37,19 @@ func (m *Memory) CreateCappedBook(ctx context.Context, c account.CappedConfig) (
 	s, e := account.NewCappedState(c)
 	c = s.Config
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if old, ok := m.cappedBooks[c.ID]; ok {
 		if !reflect.DeepEqual(old.Config, c) {
-			return s, account.ErrBookConflict
+			return account.CappedState{}, account.ErrBookConflict
 		}
 		return copyCapped(old)
 	}
 	for _, v := range m.cappedBooks {
 		if v.Config.BrokerAccountID == c.BrokerAccountID {
-			return s, account.ErrBookConflict
+			return account.CappedState{}, account.ErrBookConflict
 		}
 	}
 	if m.cappedBooks == nil {
@@ -68,7 +68,7 @@ func (m *Memory) CappedBook(ctx context.Context, id string) (account.CappedState
 	defer m.mu.Unlock()
 	s, ok := m.cappedBooks[id]
 	if !ok {
-		return s, account.ErrBookNotFound
+		return account.CappedState{}, account.ErrBookNotFound
 	}
 	return copyCapped(s)
 }
@@ -82,19 +82,42 @@ func (m *Memory) ApplyCappedBook(ctx context.Context, id string, version int64, 
 	defer m.mu.Unlock()
 	s, ok := m.cappedBooks[id]
 	if !ok {
-		return s, account.ErrBookNotFound
+		return account.CappedState{}, account.ErrBookNotFound
+	}
+	if old, ok := m.cappedHistory[id][c.ID]; ok {
+		if !sameCappedCommand(old.Command, c) {
+			return account.CappedState{}, account.ErrBookConflict
+		}
+		return copyCapped(s)
 	}
 	next, e := account.ApplyCappedCommand(s, c)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	if next.Version != s.Version && version != s.Version {
-		return s, account.ErrBookConflict
+		return account.CappedState{}, account.ErrBookConflict
 	}
 	if next.Version != s.Version {
 		if e = m.checkPortfolioAdmissionsLocked(s, next.Events[len(next.Events)-1]); e != nil {
-			return s, e
+			return account.CappedState{}, e
 		}
+	}
+	if next.Version != s.Version {
+		record, err := newCappedHistory(s, next, c)
+		if err != nil {
+			return account.CappedState{}, err
+		}
+		if m.cappedHistory == nil {
+			m.cappedHistory = map[string]map[string]CappedHistoryRecord{}
+		}
+		if m.cappedHistory[id] == nil {
+			m.cappedHistory[id] = map[string]CappedHistoryRecord{}
+		}
+		m.cappedHistory[id][c.ID] = record
+		if m.cappedHistoryOrder == nil {
+			m.cappedHistoryOrder = map[string][]string{}
+		}
+		m.cappedHistoryOrder[id] = append(m.cappedHistoryOrder[id], c.ID)
 	}
 	m.cappedBooks[id] = next
 	return copyCapped(next)
@@ -105,22 +128,22 @@ func (p *Postgres) CreateCappedBook(ctx context.Context, c account.CappedConfig)
 	s, e := account.NewCappedState(c)
 	c = s.Config
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	raw, e := json.Marshal(c)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	_, e = p.pool.Exec(ctx, `INSERT INTO mantik_capped_books(id,broker_account,config) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, c.ID, c.BrokerAccountID, string(raw))
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	old, e := p.CappedBook(ctx, c.ID)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	if !reflect.DeepEqual(old.Config, c) {
-		return s, account.ErrBookConflict
+		return account.CappedState{}, account.ErrBookConflict
 	}
 	return old, nil
 }
@@ -132,6 +155,18 @@ type cappedQuery interface {
 
 func loadCapped(ctx context.Context, q cappedQuery, id string) (account.CappedState, error) {
 	var raw []byte
+	var digest string
+	err := q.QueryRow(ctx, `SELECT h.state,j.state_sha256 FROM mantik_capped_book_heads h JOIN mantik_capped_book_history j ON j.book_id=h.book_id AND j.sequence=h.version WHERE h.book_id=$1`, id).Scan(&raw, &digest)
+	if err == nil {
+		var s account.CappedState
+		if cappedDigest(raw) != digest || json.Unmarshal(raw, &s) != nil || s.Config.ID != id {
+			return account.CappedState{}, account.ErrBookConflict
+		}
+		return s, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return account.CappedState{}, err
+	}
 	e := q.QueryRow(ctx, `SELECT config FROM mantik_capped_books WHERE id=$1`, id).Scan(&raw)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return account.CappedState{}, account.ErrBookNotFound
@@ -145,20 +180,20 @@ func loadCapped(ctx context.Context, q cappedQuery, id string) (account.CappedSt
 	}
 	s, e := account.NewCappedState(c)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	rows, e := q.Query(ctx, `SELECT payload FROM mantik_capped_book_events WHERE book_id=$1 ORDER BY sequence`, id)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	defer rows.Close()
 	for rows.Next() {
 		if e = rows.Scan(&raw); e != nil {
-			return s, e
+			return account.CappedState{}, e
 		}
 		var command account.BookCommand
 		if e = json.Unmarshal(raw, &command); e != nil {
-			return s, e
+			return account.CappedState{}, e
 		}
 		s.Events = append(s.Events, command)
 		s.Version++
@@ -189,30 +224,51 @@ func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64
 	}
 	s, e := loadCapped(ctx, tx, id)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
+	}
+	old, found, err := cappedHistoryCommand(ctx, tx, id, c.ID)
+	if err != nil {
+		return account.CappedState{}, err
+	}
+	if found {
+		if !sameCappedCommand(old, c) {
+			return account.CappedState{}, account.ErrBookConflict
+		}
+		return s, nil
 	}
 	next, e := account.ApplyCappedCommand(s, c)
 	if e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	if next.Version != s.Version {
 		if version != s.Version {
-			return s, account.ErrBookConflict
+			return account.CappedState{}, account.ErrBookConflict
 		}
 		command := next.Events[len(next.Events)-1]
 		if e = checkPortfolioAdmissionsTx(ctx, tx, s, command); e != nil {
-			return s, e
+			return account.CappedState{}, e
 		}
-		raw, e := json.Marshal(command)
-		if e != nil {
-			return s, e
+		record, err := newCappedHistory(s, next, command)
+		if err != nil {
+			return account.CappedState{}, err
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_events(book_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)`, id, next.Version, command.ID, string(raw)); e != nil {
-			return s, e
+		raw, err := json.Marshal(command)
+		if err != nil {
+			return account.CappedState{}, err
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_history(book_id,sequence,event_id,payload,previous_sha256,state_sha256) VALUES($1,$2,$3,$4,$5,$6)`, id, next.Version, command.ID, string(raw), record.PreviousSHA256, record.StateSHA256); e != nil {
+			return account.CappedState{}, e
+		}
+		head, err := json.Marshal(next)
+		if err != nil {
+			return account.CappedState{}, err
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO mantik_capped_book_heads(book_id,version,state,state_sha256) VALUES($1,$2,$3,$4) ON CONFLICT(book_id) DO UPDATE SET version=EXCLUDED.version,state=EXCLUDED.state,state_sha256=EXCLUDED.state_sha256`, id, next.Version, string(head), record.StateSHA256); e != nil {
+			return account.CappedState{}, e
 		}
 	}
 	if e = tx.Commit(ctx); e != nil {
-		return s, e
+		return account.CappedState{}, e
 	}
 	return next, nil
 }

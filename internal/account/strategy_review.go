@@ -72,7 +72,7 @@ type reviewLifecycle struct {
 func reviewPrefix(s CappedState, id string) CappedState {
 	for i, e := range s.Events {
 		if e.ID == id {
-			s.Events, s.Version = s.Events[:i], int64(i)
+			s = CappedPrefix(s, i)
 			break
 		}
 	}

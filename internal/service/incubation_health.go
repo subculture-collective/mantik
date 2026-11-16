@@ -457,9 +457,14 @@ func reconciliationUnchanged(state account.CappedState, rec *incubationReconcili
 	if rec == nil || rec.version < 0 || rec.version > state.Version {
 		return false
 	}
-	for _, event := range state.Events[rec.version:] {
+	version := int64(0)
+	for _, event := range state.Events {
+		version += account.CappedCommandCount(event)
+		if version <= rec.version {
+			continue
+		}
 		switch event.Kind {
-		case "risk_observe", "risk_control", "deposit", "review_declare", "strategy_review":
+		case "risk_checkpoint", "risk_observe", "risk_control", "deposit", "review_declare", "strategy_review":
 		case "incubation_plan":
 			if event.Incubation == nil || event.Incubation.Rebalance.ID != allocationID {
 				return false
@@ -486,5 +491,5 @@ func reconciliationUnchanged(state account.CappedState, rec *incubationReconcili
 			return false
 		}
 	}
-	return true
+	return version == state.Version
 }

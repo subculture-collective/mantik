@@ -49,10 +49,52 @@ price/fee breaches or terminal quantity mismatches halt further admission.
 Original venue responses remain available in the Alpaca journal.
 
 PostgreSQL migration 121 adds immutable configurations and append-only events.
-A parent-row lock and expected version serialize competing reservations;
-sequence guards reject gaps, updates, deletes and truncation. Memory and SQL
-stores expose the same command contract. Events are bounded at 4,096 per book;
-capacity or storage errors stop publication and require retained-history review.
+Migration 126 keeps those original rows unchanged and adds immutable, indexed
+command custody plus a bounded replay head. A parent-row lock and expected
+version serialize reservations, observations and head publication in one
+transaction. The head's SHA-256 must match the immutable transition receipt;
+source records reject updates, deletes and truncation. Memory and SQL stores
+expose the same command contract.
+
+The hot replay projection remains capped at 4,096 slots. Continuous safety
+monitoring folds only consecutive trailing `risk_observe` commands into an
+internal checkpoint and the latest observation. Every original command remains
+available in custody. Each observation still runs the fixed `risk.Observe`
+transition, including its rounding, cash-flow adjustment, NAV, high-water and
+daily baselines, persistent halt and owner controls. Changing prices consume
+archive storage rather than unbounded hot replay slots. A checkpoint carries
+the exact resulting risk state, observation count, last original observation and
+rolling source hash. Ordinary `ApplyCappedBook` commands cannot submit one.
+
+`CappedState.Version` counts original commands, not hot slots. Use
+`account.CappedPrefix` when selecting a prefix and `account.CappedCommandCount`
+when walking an original-version boundary in the hot projection. Only the current trailing run
+can be folded: economic events, ownership, orders, deposits, fills, controls and
+prefixes already bound by review hashes stay in the hot projection. Legacy
+journals replay in their original representation until their next observation;
+new optional fields are omitted from legacy JSON. Scheduled deposits and other
+non-observation events still consume slots. Exhausting those slots or archive
+storage stops publication and requires retained-history review; this change
+does not provide indefinite economic-journal retention.
+
+`storage.CappedHistoryStore.CappedBookHistory` reads detached originals by
+exclusive original sequence, at most 256 commands and 8 MiB per page. New
+commands have a 4 MiB archive bound. A legacy command larger than the page
+bound returns an explicit error and requires direct inspection of its original
+SQL row; it is never skipped or truncated. Exact retries, including observations no
+longer present in hot replay, compare against immutable originals; changed
+retries conflict. Legacy custody remains in the migration-121 table, with its
+original 4,096-row cap. New commands use the migration-126 history table.
+
+For inspection or recovery, read the immutable configuration and pin a target
+version from `CappedBook`. `storage.ReplayCappedBookHistory` rebuilds that exact
+version using bounded pages, checks sequence and source digests, keeps legacy
+prefix bytes, and verifies every later before/after projection hash. It returns
+a detached state and grants no store write or submission authority. PostgreSQL
+backups must retain configuration, legacy events, command history and replay
+heads together; do not prune custody or edit a checkpoint to reclaim space.
+Archive size grows with monitoring frequency, so provision and monitor database
+storage. There is no automatic archival deletion or retention expiry.
 The book reports cash, settled cash, marked equity, owned positions and pending
 orders, its retained distribution and the persistent risk-brake view. It supports
 the opt-in [incubation runner](incubation.md), which retains decisions and both

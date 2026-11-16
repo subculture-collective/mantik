@@ -212,8 +212,7 @@ func validateIncubationFill(s CappedState, c BookCommand) error {
 	prefix := s
 	for i, e := range s.Events {
 		if e.ID == c.ID {
-			prefix.Events = s.Events[:i]
-			prefix.Version = int64(i)
+			prefix = CappedPrefix(s, i)
 			break
 		}
 	}
@@ -281,8 +280,7 @@ func incubationPlanJSONSize(p IncubationPlan) bool {
 func checkIncubationOrder(s CappedState, c BookCommand) error {
 	for i, e := range s.Events {
 		if e.ID == c.ID {
-			s.Events = s.Events[:i+1]
-			s.Version = int64(i + 1)
+			s = CappedPrefix(s, i+1)
 			break
 		}
 	}

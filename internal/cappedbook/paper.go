@@ -233,8 +233,7 @@ func retainedRebalance(book account.CappedState, req allocation.RebalanceRequest
 		if event.Kind != "rebalance" || event.Rebalance == nil || len(req.Sleeves) != len(event.Rebalance.Sleeves) {
 			return allocation.Distribution{}, true, account.ErrBookConflict
 		}
-		prefix := book
-		prefix.Events, prefix.Version = book.Events[:i], int64(i)
+		prefix := account.CappedPrefix(book, i)
 		roster, e := account.PortfolioRoster(prefix)
 		if e != nil {
 			return allocation.Distribution{}, true, e
@@ -269,8 +268,7 @@ func rebalanceDistribution(s account.CappedState, id string) (allocation.Distrib
 	for i, event := range s.Events {
 		if event.ID == id && event.Kind == "rebalance" {
 			// Exact retries return the original sizing even after later commands.
-			s.Events = s.Events[:i+1]
-			s.Version = int64(i + 1)
+			s = account.CappedPrefix(s, i+1)
 			snap, e := account.SnapshotCapped(s, event.Marks, event.At)
 			if e != nil {
 				return allocation.Distribution{}, e
