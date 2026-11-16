@@ -232,3 +232,53 @@ func TestIncubationActualAdapterChecksClockAfterPreparation(t *testing.T) {
 		})
 	}
 }
+
+func TestForwardActualAdapterChecksWindowAfterPreparation(t *testing.T) {
+	r, req, strategy, _, record := forwardRunnerFixture(t)
+	req = nextForwardCycle(req, "forward-adapter-expiry", record.Declaration.WindowEnd.Add(-4*time.Second))
+	at := req.ExecuteAt
+	r.now = func() time.Time { return at }
+	gets, posts := 0, 0
+	old := http.DefaultTransport
+	http.DefaultTransport = incubationTransport(func(h *http.Request) (*http.Response, error) {
+		if h.Method == http.MethodGet {
+			gets++
+			at = at.Add(2 * time.Second)
+		}
+		raw := ""
+		switch h.URL.Path {
+		case "/v2/account":
+			raw = `{"id":"paper-fixture","status":"ACTIVE"}`
+		case "/v2/assets/SPY":
+			raw = `{"symbol":"SPY","class":"us_equity","tradable":true}`
+		case "/v2/orders":
+			posts++
+			return nil, errors.New("unexpected POST after forward expiry")
+		default:
+			t.Fatalf("unexpected intercepted path: %s", h.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(raw))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	journal, err := alpaca.OpenJournal(filepath.Join(t.TempDir(), "forward-paper"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	r.Broker, err = alpaca.NewPaperTrader(alpaca.PaperCredentials{OAuthToken: "fixture-only"}, "paper-fixture", journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "forward eligibility expired before submission") || posts != 0 || gets != 2 || strategy.calls != 1 {
+		t.Fatal("preparatory requests extended the forward window", err, posts, gets, strategy.calls)
+	}
+	state, err := r.Store.CappedBook(context.Background(), r.BookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := account.SnapshotCapped(state, incubationMarks(req.Quotes), at)
+	if err != nil || len(snapshot.Pending) != 0 {
+		t.Fatal("known forward refusal trapped the reservation", snapshot, err)
+	}
+}
