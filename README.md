@@ -226,4 +226,6 @@ The [SPY engine check](docs/reference/spy-engine-check.md) compares cash/margin
 accounting with scheduled deposits against an independent reference on the
 manifest-verified 2016-to-date history.
 
+[Daily strategy oversight](docs/reference/daily-strategy-review.md) adds authenticated, retained evidence reviews and owner retirement. Review reductions take effect on a strictly later decision/rebalance; growth stays inside the existing admitted stage and grants no qualification. Missing comparisons hold or request inactive investigation.
+
 Canonical strategy forward windows use the separate [forward declaration contract](docs/reference/forward-declarations.md). It binds prospective clocks, its own benchmark, minimums and actual trial-family search bound to the capped-book runner, with multiweek holds and no qualification credit. Legacy threshold replay retains its original rules.

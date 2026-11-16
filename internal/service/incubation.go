@@ -240,6 +240,10 @@ func (r IncubationRunner) Run(ctx context.Context, req IncubationRequest) (Incub
 					holdExposure = a.OutcomeOpen && b.OutcomeOpen && !a.HoldExpired && !b.HoldExpired && !opened.IsZero() && !opened.Before(decl.WindowStart)
 				}
 			}
+			if account.ReviewExitRequired(state, s.SleeveID, g.Decision.StrategyID, req.DecidedAt) {
+				controlled, holdExposure = true, false
+				d = strategy.Decision{State: book.State}
+			}
 			if !controlled {
 				view, e := strategy.Build(ctx, s.Strategy.Spec(), s.Source, req.DecidedAt, s.Assets, book)
 				if e != nil {

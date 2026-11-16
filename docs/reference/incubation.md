@@ -153,3 +153,12 @@ real market observation, broker connectivity, protected position, performance or
 qualification result. No external order is part of this implementation proof.
 
 Canonical strategy forward windows use the separate [forward declaration contract](forward-declarations.md). It binds prospective clocks, its own benchmark, minimums and actual trial-family search bound to the capped-book runner, with multiweek holds and no qualification credit. Legacy threshold replay retains its original rules.
+
+## Daily oversight
+
+[Daily strategy review](daily-strategy-review.md) retains evidence-bound budget
+transitions in the same capped-book journal. The runner uses the strictly later
+decision clock, makes retired strategies explicitly flat without calling Decide,
+and retains pending ownership and all existing admissions. Whole-book
+`IncubationReturns` is not used as strategy forward performance. Owner retirement
+is permanent and distinct from the resumable strategy breaker.

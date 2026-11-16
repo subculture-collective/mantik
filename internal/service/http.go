@@ -55,6 +55,7 @@ func handlerWithAcquisitions(store storage.Store, token string, clock Clock, pol
 	decisionReviewRoutes(mux, store, clock)
 	paperEvaluationDeclarationRoutes(mux, store, clock)
 	forwardDeclarationRoutes(mux, store, clock)
+	strategyReviewRoutes(mux, store, clock, token)
 	paperEvaluationEvidenceRoutes(mux, store, clock)
 	paperEvaluationEntryReplayRoutes(mux, store, clock)
 	paperEvaluationProtectiveReplayRoutes(mux, store, clock)
