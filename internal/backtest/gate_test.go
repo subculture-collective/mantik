@@ -210,6 +210,47 @@ func TestGateRejectsRetrospectiveDeclarationAndChangedVersion(t *testing.T) {
 	}
 }
 
+func TestSyntheticTrialsCannotGrantAdmissionDespiteSourceAssertions(t *testing.T) {
+	for _, class := range []string{"synthetic_fixture", "historical_market_unqualified"} {
+		t.Run(class, func(t *testing.T) {
+			s, d, cs, cfg := gateFixture(t)
+			d.Coverage, d.Availability = true, true
+			d.Benchmark = "cash"
+			for i := range d.SPY.Returns {
+				d.SPY.Returns[i].Return = "0"
+			}
+			ctx := context.Background()
+			if _, e := DeclareGate(ctx, s, d); e != nil {
+				t.Fatal(e)
+			}
+			if _, e := WalkForward(ctx, s, cfg, d.Calendar, Design{d.Train, d.Test, d.Purge, d.Embargo}, engine.CostModel{Version: "stress", FeeBps: "1", SlippageBps: "5"}, cs, engine.Trial{ID: d.ExperimentID, Family: d.Family, DataSHA256: d.DataSHA256, EvidenceClass: class}); e != nil {
+				t.Fatal(e)
+			}
+			if class == "historical_market_unqualified" {
+				// Even an extra synthetic search attempt must not enter the family
+				// used for operational statistics and admission.
+				_, e := s.StartStrategyTrial(ctx, strategytrial.Start{ID: "synthetic-search", Family: d.Family, StrategyID: d.StrategyID, Spec: d.Spec, Config: json.RawMessage(`{"additional":true}`), DataSHA256: d.DataSHA256, EvidenceClass: "synthetic_fixture", StartedAt: time.Now().UTC()})
+				if e != nil {
+					t.Fatal(e)
+				}
+			}
+			r, e := EvaluateGate(ctx, s, d.ID)
+			if e != nil || r.Decision == nil || r.Decision.Status != "failed" || r.Decision.Stage != "idea" {
+				t.Fatal("synthetic trials granted operational admission", r.Decision, e)
+			}
+			found := false
+			for _, c := range r.Decision.Checks {
+				if c.Code == "evidence_class" && !c.Passed && !c.Skipped {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("synthetic evidence refusal missing", r.Decision)
+			}
+		})
+	}
+}
+
 func TestGatePassMovesOnlyToIncubationAndRejectsDifferentCapital(t *testing.T) {
 	for _, balance := range []string{"2000", "20000"} {
 		t.Run(balance, func(t *testing.T) {
@@ -224,7 +265,9 @@ func TestGatePassMovesOnlyToIncubationAndRejectsDifferentCapital(t *testing.T) {
 				t.Fatal(e)
 			}
 			cfg.InitialCash = balance
-			if _, e := WalkForward(ctx, s, cfg, d.Calendar, Design{d.Train, d.Test, d.Purge, d.Embargo}, engine.CostModel{Version: "stress", FeeBps: "1", SlippageBps: "5"}, cs, engine.Trial{ID: d.ExperimentID, Family: d.Family, DataSHA256: d.DataSHA256, EvidenceClass: "synthetic_fixture"}); e != nil {
+			// Simulate the historical-class protocol with an in-memory source.
+			// These generated returns remain unit fixtures, not real evidence.
+			if _, e := WalkForward(ctx, s, cfg, d.Calendar, Design{d.Train, d.Test, d.Purge, d.Embargo}, engine.CostModel{Version: "stress", FeeBps: "1", SlippageBps: "5"}, cs, engine.Trial{ID: d.ExperimentID, Family: d.Family, DataSHA256: d.DataSHA256, EvidenceClass: "historical_market_unqualified"}); e != nil {
 				t.Fatal(e)
 			}
 			r, e := EvaluateGate(ctx, s, d.ID)

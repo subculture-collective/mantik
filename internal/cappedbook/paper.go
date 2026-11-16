@@ -198,6 +198,9 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 		if g.Decision == nil || g.Decision.Stage != "incubation" || g.Decision.StrategyID != s.StrategyID {
 			return allocation.Distribution{}, errors.New("incubation_gate_required")
 		}
+		if !g.Decision.AdmitsIncubation() {
+			return allocation.Distribution{}, errors.New("gate_evidence_ineligible")
+		}
 		n, e := reader.StrategyTrialSearchTotal(ctx, g.Declaration.Family)
 		if e != nil {
 			return allocation.Distribution{}, e
@@ -219,6 +222,14 @@ func (c Client) Rebalance(ctx context.Context, req allocation.RebalanceRequest, 
 	s, e := c.append(ctx, account.BookCommand{ID: req.ID, Kind: "rebalance", At: req.At, Rebalance: &req, Marks: marks})
 	if e != nil {
 		return allocation.Distribution{}, e
+	}
+	for i, event := range s.Events {
+		if event.ID == req.ID && event.Kind == "rebalance" {
+			// Exact retries return the original sizing even after later commands.
+			s.Events = s.Events[:i+1]
+			s.Version = int64(i + 1)
+			break
+		}
 	}
 	snap, e := account.SnapshotCapped(s, marks, req.At)
 	if e != nil {

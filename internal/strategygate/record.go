@@ -102,11 +102,18 @@ type Diagnostic struct {
 // family start invalidates using an old decision for a new incubation entry.
 type Decision struct {
 	ID, StrategyID, DeclarationSHA256, FamilySHA256, Policy string
+	EvidenceClass                                           string
 	Status, Stage, Minimum                                  string
 	SearchTotal                                             int64
 	Checks                                                  []Check
 	Diagnostics                                             []Diagnostic
 	At                                                      time.Time
+}
+
+// AdmitsIncubation excludes synthetic and legacy unclassified decisions from
+// new exposure. Forward-only models have no historical performance admission.
+func (d Decision) AdmitsIncubation() bool {
+	return d.Stage == "incubation" && (d.Status == "passed" && d.EvidenceClass == "historical_market_unqualified" || d.Status == "forward_only" && d.EvidenceClass == "forward_only")
 }
 
 // Validate checks internal status/check consistency, not external provenance.
@@ -129,7 +136,7 @@ func (d Decision) Validate() error {
 			return ErrInvalid
 		}
 	case "passed", "forward_only":
-		if fail || d.Stage != "incubation" {
+		if fail || !d.AdmitsIncubation() {
 			return ErrInvalid
 		}
 	default:

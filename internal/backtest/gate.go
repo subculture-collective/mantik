@@ -191,9 +191,20 @@ func EvaluateGate(ctx context.Context, store GateStore, id string) (strategygate
 	}
 	if spec.ModelDriven {
 		out.Status, out.Stage, out.Minimum = "forward_only", "incubation", d.Minimum
+		out.EvidenceClass = "forward_only"
 		out.Checks = append(out.Checks, strategygate.Check{Code: "backtest_gate", Skipped: true, Reason: "runtime_model_requires_forward_only_path"})
 		return store.RecordStrategyGate(ctx, out)
 	}
+	if len(family) > 0 {
+		out.EvidenceClass = "historical_market_unqualified"
+		for _, trial := range family {
+			if trial.Start.EvidenceClass != "historical_market_unqualified" {
+				out.EvidenceClass = "synthetic_fixture"
+				break
+			}
+		}
+	}
+	check("evidence_class", out.EvidenceClass == "historical_market_unqualified", "operational_gate_requires_historical_market_trials")
 	check("source_coverage", d.Coverage, "reviewed_universe_and_price_coverage_required")
 	for _, v := range d.Candidates {
 		var plan TradeabilityPlan

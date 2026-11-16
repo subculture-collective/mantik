@@ -42,6 +42,16 @@ reported as zero. Other missing statistics fail the gate. A pass records stage
 content-addressed version and takes `forward_only` incubation without a
 historical performance gate. None of these statuses is qualification.
 
+Deterministic decisions retain the registry family's evidence class. Every
+attempt contributing to that family must be `historical_market_unqualified`;
+any `synthetic_fixture` attempt fails the `evidence_class` check even when
+coverage and availability were asserted. Synthetic evidence cannot grant
+operational admission. Models record `forward_only` explicitly. Both the public
+client and transactional order boundary reject synthetic or older unclassified
+decisions with `gate_evidence_ineligible`; existing positions can still use
+bounded flat exits. Older unclassified decisions stay readable and immutable
+and require a new reviewed gate before new exposure.
+
 The local CLI uses an explicitly selected database environment variable:
 
 ```sh
@@ -84,6 +94,9 @@ can resize it without asking the strategy for an extra signal.
 
 The retained distribution binds order ID, strategy, sleeve, side, quantity,
 limit, fee and clock. `Client.Submit` accepts only an exact retained order.
+An exact rebalance retry returns its original distribution by replaying the
+journal prefix through that request, even after a later rebalance at the same
+or a later clock. The current journal remains unchanged.
 Quantity changes and raw orders fail before a broker POST. Independent pending
 orders cannot net or release capacity, and a sleeve waits for reconciliation
 before replacing an outstanding target. The existing journaled broker adapter

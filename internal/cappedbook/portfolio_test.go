@@ -42,12 +42,82 @@ func portfolioFixture(t *testing.T) (Client, *fakePaper, allocation.RebalanceReq
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = store.RecordStrategyGate(context.Background(), strategygate.Decision{ID: d.ID, StrategyID: sid, DeclarationSHA256: h, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, Status: "passed", Stage: "incubation", Minimum: "1", At: record.DeclaredAt, Checks: []strategygate.Check{{Code: "fixture_admission", Passed: true, Reason: "isolated_order_boundary_fixture"}}})
+	_, e = store.RecordStrategyGate(context.Background(), strategygate.Decision{ID: d.ID, StrategyID: sid, DeclarationSHA256: h, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, EvidenceClass: "historical_market_unqualified", Status: "passed", Stage: "incubation", Minimum: "1", At: record.DeclaredAt, Checks: []strategygate.Check{{Code: "fixture_admission", Passed: true, Reason: "isolated_order_boundary_fixture"}}})
 	if e != nil {
 		t.Fatal(e)
 	}
 	r := allocation.RebalanceRequest{ID: "rebalance-one", At: at, Sleeves: []allocation.Sleeve{{ID: "trend", StrategyID: sid, Stage: "incubation", GateID: "gate", Risk: "0.02"}}, Targets: []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "1"}}}}}, Limits: map[string]string{"SPY": "100"}, Fees: map[string]string{"SPY": "0"}}
 	return c, b, r, map[string]string{"SPY": "100"}
+}
+
+func TestRebalanceRetryReturnsItsOwnDistribution(t *testing.T) {
+	for _, delay := range []time.Duration{0, time.Minute} {
+		t.Run(delay.String(), func(t *testing.T) {
+			c, _, r, marks := portfolioFixture(t)
+			ctx := context.Background()
+			first, e := c.Rebalance(ctx, r, marks)
+			if e != nil {
+				t.Fatal(e)
+			}
+			second := r
+			second.ID = "rebalance-two"
+			second.At = second.At.Add(delay)
+			second.Targets = []allocation.SleeveTarget{{SleeveID: "trend", Decision: allocation.TargetDecision{Targets: []allocation.WeightTarget{{Asset: "SPY", Weight: "0.5"}}}}}
+			if _, e = c.Rebalance(ctx, second, marks); e != nil {
+				t.Fatal(e)
+			}
+			before, e := c.load(ctx)
+			if e != nil {
+				t.Fatal(e)
+			}
+			retried, e := c.Rebalance(ctx, r, marks)
+			if e != nil {
+				t.Fatal("retained retry failed after a later rebalance", e)
+			}
+			wantHash, _ := strategygate.Hash(first)
+			gotHash, _ := strategygate.Hash(retried)
+			if gotHash != wantHash {
+				t.Fatal("retry returned another distribution", first, retried)
+			}
+			after, e := c.load(ctx)
+			if e != nil || after.Version != before.Version {
+				t.Fatal("retry changed retained book", before.Version, after.Version, e)
+			}
+		})
+	}
+}
+
+type gateClassBook struct {
+	*storage.Memory
+	evidenceClass string
+}
+
+func (s *gateClassBook) StrategyGate(ctx context.Context, id string) (strategygate.Record, error) {
+	r, e := s.Memory.StrategyGate(ctx, id)
+	if e == nil && r.Decision != nil {
+		r.Decision.EvidenceClass = s.evidenceClass
+	}
+	return r, e
+}
+
+func TestRebalanceRefusesSyntheticAndLegacyUnclassifiedGates(t *testing.T) {
+	for _, class := range []string{"", "synthetic_fixture"} {
+		t.Run(class, func(t *testing.T) {
+			c, b, r, marks := portfolioFixture(t)
+			c.Store = &gateClassBook{Memory: c.Store.(*storage.Memory), evidenceClass: class}
+			before, e := c.load(context.Background())
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = c.Rebalance(context.Background(), r, marks); e == nil || !strings.Contains(e.Error(), "gate_evidence_ineligible") {
+				t.Fatal("ineligible gate admitted", class, e)
+			}
+			after, e := c.load(context.Background())
+			if e != nil || after.Version != before.Version || b.posts != 0 {
+				t.Fatal("refused gate changed book or reached broker", e, b.posts)
+			}
+		})
+	}
 }
 
 func TestPublicReservationsReconcileAmbiguousAndCanceledPartialFills(t *testing.T) {
@@ -250,11 +320,12 @@ func admitPortfolioVersion(t *testing.T, c Client, name string, model bool) (str
 	if e != nil {
 		t.Fatal(e)
 	}
-	status := "passed"
+	status, evidenceClass := "passed", "historical_market_unqualified"
 	if model {
 		status = "forward_only"
+		evidenceClass = "forward_only"
 	}
-	_, e = store.RecordStrategyGate(context.Background(), strategygate.Decision{ID: name, StrategyID: sid, DeclarationSHA256: h, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, Status: status, Stage: "incubation", Minimum: "1", At: r.DeclaredAt, Checks: []strategygate.Check{{Code: "fixture_admission", Passed: true, Reason: "isolated_order_boundary_fixture"}}})
+	_, e = store.RecordStrategyGate(context.Background(), strategygate.Decision{ID: name, StrategyID: sid, DeclarationSHA256: h, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, EvidenceClass: evidenceClass, Status: status, Stage: "incubation", Minimum: "1", At: r.DeclaredAt, Checks: []strategygate.Check{{Code: "fixture_admission", Passed: true, Reason: "isolated_order_boundary_fixture"}}})
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -41,7 +41,7 @@ func gateStorageContracts(t *testing.T, s strategygate.Store) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	decision := strategygate.Decision{ID: d.ID, StrategyID: d.StrategyID, DeclarationSHA256: dh, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, Status: "forward_only", Stage: "incubation", Minimum: "1", At: r.DeclaredAt, Checks: []strategygate.Check{{Code: "model", Skipped: true, Reason: "forward_only_fixture"}}}
+	decision := strategygate.Decision{ID: d.ID, StrategyID: d.StrategyID, DeclarationSHA256: dh, FamilySHA256: strings.Repeat("b", 64), Policy: d.Policy, EvidenceClass: "forward_only", Status: "forward_only", Stage: "incubation", Minimum: "1", At: r.DeclaredAt, Checks: []strategygate.Check{{Code: "model", Skipped: true, Reason: "forward_only_fixture"}}}
 	r, e = s.RecordStrategyGate(ctx, decision)
 	if e != nil {
 		t.Fatal(e)
@@ -66,6 +66,10 @@ func gateStorageContracts(t *testing.T, s strategygate.Store) {
 	}
 	invalidDecision := decision
 	invalidDecision.DeclarationSHA256 = strings.Repeat("c", 64)
+	syntheticDecision := decision
+	syntheticDecision.EvidenceClass = "synthetic_fixture"
+	legacyDecision := decision
+	legacyDecision.EvidenceClass = ""
 	for _, tc := range []struct {
 		name string
 		call func() (strategygate.Record, error)
@@ -74,6 +78,8 @@ func gateStorageContracts(t *testing.T, s strategygate.Store) {
 		{"declaration conflict", func() (strategygate.Record, error) { return s.DeclareStrategyGate(ctx, changed) }, strategygate.ErrConflict},
 		{"decision conflict", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, changedDecision) }, strategygate.ErrConflict},
 		{"invalid decision", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, invalidDecision) }, strategygate.ErrInvalid},
+		{"synthetic admission", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, syntheticDecision) }, strategygate.ErrInvalid},
+		{"unclassified admission", func() (strategygate.Record, error) { return s.RecordStrategyGate(ctx, legacyDecision) }, strategygate.ErrInvalid},
 	} {
 		t.Run(tc.name+" returns detached history", func(t *testing.T) {
 			got, err := tc.call()
@@ -202,6 +208,23 @@ func portfolioJournalContracts(t *testing.T, s CappedBookStore) {
 	}
 	v := snap.Distribution.Orders[0]
 	o := account.BookOrder{ReduceOnly: v.ReduceOnly, ID: v.ID, AllocationID: v.AllocationID, SleeveID: v.SleeveID, StrategyID: v.StrategyID, Symbol: v.Symbol, Quantity: v.Quantity, Limit: v.Limit, Side: v.Side, Fee: v.Fee, At: v.At}
+	for _, class := range []string{"", "synthetic_fixture"} {
+		for _, cmd := range []account.BookCommand{
+			{ID: req.ID, Kind: "rebalance", At: at, Rebalance: &req, Marks: marks},
+			{ID: "reserve-" + o.ID, Kind: "portfolio_reserve", At: at, Order: &o, Marks: marks},
+		} {
+			read := func(string) (strategygate.Record, error) {
+				g, err := s.(strategygate.Store).StrategyGate(ctx, "retained-gate")
+				if err == nil {
+					g.Decision.EvidenceClass = class
+				}
+				return g, err
+			}
+			if err := checkPortfolioAdmissions(state, cmd, read, func(string) (int64, error) { return 0, nil }); err == nil || !strings.Contains(err.Error(), "gate_evidence_ineligible") {
+				t.Fatal("transactional admission accepted ineligible evidence", class, cmd.Kind, err)
+			}
+		}
+	}
 	if _, e = s.ApplyCappedBook(ctx, state.Config.ID, state.Version, account.BookCommand{ID: "reserve-" + o.ID, Kind: "portfolio_reserve", At: at, Order: &o, Marks: marks}); e == nil || !strings.Contains(e.Error(), "risk_kill_switch") {
 		t.Fatal("retained kill bypassed", e)
 	}

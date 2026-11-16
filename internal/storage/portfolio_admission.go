@@ -72,6 +72,9 @@ func checkPortfolioAdmissions(s account.CappedState, c account.BookCommand, read
 		if g.Decision == nil || g.Decision.Stage != "incubation" || g.Decision.StrategyID != v.StrategyID || g.Declaration.Account != string(s.Config.Type) || g.Decision.Minimum != v.Minimum {
 			return errors.New("incubation_gate_required")
 		}
+		if !g.Decision.AdmitsIncubation() {
+			return errors.New("gate_evidence_ineligible")
+		}
 		expected := "incubation"
 		model := false
 		if g.Decision.Status == "forward_only" {
