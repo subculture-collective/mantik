@@ -72,6 +72,8 @@ quotes and zero fees or slippage.
   retains its exact journal version and refuses concurrent economic changes.
   Continuous risk observations retain immutable originals behind a bounded
   replay checkpoint, preserving observed peaks and brakes across restarts.
+  SQL reads verify replay transitions before trusting a head; a private cache
+  bounds later verification to the unseen command suffix.
   Authenticated per-book readiness reports admission for each work class.
 - **Kalshi data**: [public collection](docs/reference/kalshi-data.md) retains
   weather-market rules and order-book observations for point-in-time reads.

@@ -87,18 +87,18 @@ func (p *Postgres) validateCollectionTx(ctx context.Context, tx pgx.Tx, s accoun
 	if e != nil || p.qualificationEvaluator == nil {
 		return forward.ErrInvalid
 	}
-	plan, e := loadAssessmentPlan(ctx, tx, id)
+	plan, e := p.loadAssessmentPlan(ctx, tx, id)
 	if e != nil {
 		return e
 	}
-	w, e := loadForward(ctx, tx, plan.Plan.DeclarationID)
+	w, e := p.loadForward(ctx, tx, plan.Plan.DeclarationID)
 	if e != nil {
 		return e
 	}
 	if e = lockStrategyFamily(ctx, tx, w.Declaration.Family); e != nil {
 		return e
 	}
-	if e = checkPortfolioAdmissionsTx(ctx, tx, s, c, p.qualificationEvaluator); e != nil {
+	if e = p.checkPortfolioAdmissionsTx(ctx, tx, s, c); e != nil {
 		return e
 	}
 	g, e := loadGate(ctx, tx, w.Declaration.GateID)

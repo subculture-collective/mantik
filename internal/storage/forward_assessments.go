@@ -156,7 +156,7 @@ func (m *Memory) AssessForward(ctx context.Context, id string, now func() time.T
 	}
 	return clone(a), nil
 }
-func loadAssessmentPlan(ctx context.Context, q cappedQuery, id string) (forward.AssessmentPlanRecord, error) {
+func (p *Postgres) loadAssessmentPlan(ctx context.Context, q cappedQuery, id string) (forward.AssessmentPlanRecord, error) {
 	var raw []byte
 	var r forward.AssessmentPlanRecord
 	e := q.QueryRow(ctx, "SELECT payload FROM mantik_forward_assessment_plans WHERE id=$1", id).Scan(&raw)
@@ -169,7 +169,7 @@ func loadAssessmentPlan(ctx context.Context, q cappedQuery, id string) (forward.
 	if e = json.Unmarshal(raw, &r); e != nil {
 		return r, e
 	}
-	w, e := loadForward(ctx, q, r.Plan.DeclarationID)
+	w, e := p.loadForward(ctx, q, r.Plan.DeclarationID)
 	if e != nil {
 		return r, e
 	}
@@ -186,7 +186,7 @@ func (p *Postgres) DeclareForwardAssessment(ctx context.Context, plan forward.As
 	if _, e = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('mantik_assessment_plan:'||$1,0))", plan.DeclarationID); e != nil {
 		return forward.AssessmentPlanRecord{}, e
 	}
-	old, e := loadAssessmentPlan(ctx, tx, plan.ID)
+	old, e := p.loadAssessmentPlan(ctx, tx, plan.ID)
 	if e == nil {
 		if !sameGate(old.Plan, plan) {
 			return old, forward.ErrConflict
@@ -196,7 +196,7 @@ func (p *Postgres) DeclareForwardAssessment(ctx context.Context, plan forward.As
 	if !errors.Is(e, forward.ErrNotFound) {
 		return old, e
 	}
-	w, e := loadForward(ctx, tx, plan.DeclarationID)
+	w, e := p.loadForward(ctx, tx, plan.DeclarationID)
 	if e != nil {
 		return old, e
 	}
@@ -223,7 +223,7 @@ func (p *Postgres) DeclareForwardAssessment(ctx context.Context, plan forward.As
 
 // ForwardAssessmentPlan reads the original plan and verifies its retained pins.
 func (p *Postgres) ForwardAssessmentPlan(ctx context.Context, id string) (forward.AssessmentPlanRecord, error) {
-	return loadAssessmentPlan(ctx, p.pool, id)
+	return p.loadAssessmentPlan(ctx, p.pool, id)
 }
 
 // AssessForward locks the book first and family second, matching allocation.
@@ -233,11 +233,11 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 		return forward.Assessment{}, e
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	plan, e := loadAssessmentPlan(ctx, tx, id)
+	plan, e := p.loadAssessmentPlan(ctx, tx, id)
 	if e != nil {
 		return forward.Assessment{}, e
 	}
-	w, e := loadForward(ctx, tx, plan.Plan.DeclarationID)
+	w, e := p.loadForward(ctx, tx, plan.Plan.DeclarationID)
 	if e != nil {
 		return forward.Assessment{}, e
 	}
@@ -248,7 +248,7 @@ func (p *Postgres) AssessForward(ctx context.Context, id string, now func() time
 	if e = lockStrategyFamily(ctx, tx, w.Declaration.Family); e != nil {
 		return forward.Assessment{}, e
 	}
-	b, e := loadCapped(ctx, tx, locked)
+	b, e := p.loadCapped(ctx, tx, locked)
 	if e != nil {
 		return forward.Assessment{}, e
 	}

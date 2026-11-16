@@ -602,7 +602,7 @@ func TestForwardAssessmentRejectsLegacyForgedSources(t *testing.T) {
 		w = v.forwardDeclarations[d.ID]
 		starts = sortedStarts(v.strategyTrials, d.Family)
 	case *Postgres:
-		w, e = loadForward(context.Background(), v.pool, d.ID)
+		w, e = v.loadForward(context.Background(), v.pool, d.ID)
 		if e != nil {
 			t.Fatal(e)
 		}

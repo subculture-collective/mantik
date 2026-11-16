@@ -155,57 +155,9 @@ type cappedQuery interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func loadCapped(ctx context.Context, q cappedQuery, id string) (account.CappedState, error) {
-	var raw []byte
-	var digest string
-	err := q.QueryRow(ctx, `SELECT h.state,j.state_sha256 FROM mantik_capped_book_heads h JOIN mantik_capped_book_history j ON j.book_id=h.book_id AND j.sequence=h.version WHERE h.book_id=$1`, id).Scan(&raw, &digest)
-	if err == nil {
-		var s account.CappedState
-		if cappedDigest(raw) != digest || json.Unmarshal(raw, &s) != nil || s.Config.ID != id {
-			return account.CappedState{}, account.ErrBookConflict
-		}
-		return s, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return account.CappedState{}, err
-	}
-	e := q.QueryRow(ctx, `SELECT config FROM mantik_capped_books WHERE id=$1`, id).Scan(&raw)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return account.CappedState{}, account.ErrBookNotFound
-	}
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	var c account.CappedConfig
-	if e = json.Unmarshal(raw, &c); e != nil {
-		return account.CappedState{}, e
-	}
-	s, e := account.NewCappedState(c)
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	rows, e := q.Query(ctx, `SELECT payload FROM mantik_capped_book_events WHERE book_id=$1 ORDER BY sequence`, id)
-	if e != nil {
-		return account.CappedState{}, e
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if e = rows.Scan(&raw); e != nil {
-			return account.CappedState{}, e
-		}
-		var command account.BookCommand
-		if e = json.Unmarshal(raw, &command); e != nil {
-			return account.CappedState{}, e
-		}
-		s.Events = append(s.Events, command)
-		s.Version++
-	}
-	return s, rows.Err()
-}
-
 // CappedBook reads the retained configuration and ordered journal events.
 func (p *Postgres) CappedBook(ctx context.Context, id string) (account.CappedState, error) {
-	return loadCapped(ctx, p.pool, id)
+	return p.loadCapped(ctx, p.pool, id)
 }
 
 // ApplyCappedBook locks one book for a command, so independent workers cannot
@@ -217,6 +169,10 @@ func (p *Postgres) ApplyCappedBook(ctx context.Context, id string, version int64
 func (p *Postgres) applyCappedBook(ctx context.Context, id string, version int64, c account.BookCommand, collection bool) (account.CappedState, error) {
 	if c.Kind == "qualification" || c.Qualification != nil || !collection && (c.Kind == "qualification_plan" || c.Incubation != nil && c.Incubation.Qualification != nil) {
 		return account.CappedState{}, forward.ErrInvalid
+	}
+	// Warm committed custody before acquiring a connection/row lock.
+	if _, err := p.CappedBook(ctx, id); err != nil {
+		return account.CappedState{}, err
 	}
 	tx, e := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if e != nil {
@@ -231,7 +187,7 @@ func (p *Postgres) applyCappedBook(ctx context.Context, id string, version int64
 	if e != nil {
 		return account.CappedState{}, e
 	}
-	s, e := loadCapped(ctx, tx, id)
+	s, e := p.loadCapped(ctx, tx, id)
 	if e != nil {
 		return account.CappedState{}, e
 	}
@@ -259,7 +215,7 @@ func (p *Postgres) applyCappedBook(ctx context.Context, id string, version int64
 			return account.CappedState{}, account.ErrBookConflict
 		}
 		command := next.Events[len(next.Events)-1]
-		if e = checkPortfolioAdmissionsTx(ctx, tx, s, command, p.qualificationEvaluator); e != nil {
+		if e = p.checkPortfolioAdmissionsTx(ctx, tx, s, command); e != nil {
 			return account.CappedState{}, e
 		}
 		if e = retainCappedTx(ctx, tx, s, next, command); e != nil {

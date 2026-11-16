@@ -169,7 +169,7 @@ func lockStrategyFamily(ctx context.Context, tx pgx.Tx, family string) error {
 	return e
 }
 
-func checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.CappedState, c account.BookCommand, eval QualificationEvaluator) error {
+func (p *Postgres) checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.CappedState, c account.BookCommand) error {
 	// All portfolio writers take the book row first, then sorted family locks.
 	// Trial starts take a family lock only, so no inverse book/family order exists.
 	needed, e := neededAdmissions(s, c)
@@ -193,25 +193,25 @@ func checkPortfolioAdmissionsTx(ctx context.Context, tx pgx.Tx, s account.Capped
 	}
 	e = checkPortfolioAdmissions(s, c, func(id string) (strategygate.Record, error) { return loadGate(ctx, tx, id) }, func(family string) (int64, error) {
 		return strategySearchTotal(ctx, tx, family)
-	}, func(id string) (forward.Record, error) { return loadForward(ctx, tx, id) }, func(id string) (forward.AssessmentPlanRecord, error) { return loadAssessmentPlan(ctx, tx, id) })
+	}, func(id string) (forward.Record, error) { return p.loadForward(ctx, tx, id) }, func(id string) (forward.AssessmentPlanRecord, error) { return p.loadAssessmentPlan(ctx, tx, id) })
 	if e != nil {
 		return e
 	}
-	return validateQualifiedAdmissions(ctx, s, c, eval, func(id string) (forward.AssessmentPlanRecord, forward.Record, strategygate.Record, []strategytrial.Start, error) {
-		p, e := loadAssessmentPlan(ctx, tx, id)
+	return validateQualifiedAdmissions(ctx, s, c, p.qualificationEvaluator, func(id string) (forward.AssessmentPlanRecord, forward.Record, strategygate.Record, []strategytrial.Start, error) {
+		plan, e := p.loadAssessmentPlan(ctx, tx, id)
 		if e != nil {
-			return p, forward.Record{}, strategygate.Record{}, nil, e
+			return plan, forward.Record{}, strategygate.Record{}, nil, e
 		}
-		w, e := loadForward(ctx, tx, p.Plan.DeclarationID)
+		w, e := p.loadForward(ctx, tx, plan.Plan.DeclarationID)
 		if e != nil {
-			return p, w, strategygate.Record{}, nil, e
+			return plan, w, strategygate.Record{}, nil, e
 		}
 		g, e := loadGate(ctx, tx, w.Declaration.GateID)
 		if e != nil {
-			return p, w, g, nil, e
+			return plan, w, g, nil, e
 		}
 		starts, e := loadQualificationStarts(ctx, tx, w.Declaration.Family)
-		return p, w, g, starts, e
+		return plan, w, g, starts, e
 	})
 }
 

@@ -135,7 +135,12 @@ func (p *Postgres) CappedBookHistory(ctx context.Context, id string, after int64
 	if !exists {
 		return nil, account.ErrBookNotFound
 	}
-	rows, err := p.pool.Query(ctx, `SELECT sequence,payload,previous_sha256,state_sha256 FROM (
+	return readCappedHistory(ctx, p.pool, id, after, limit)
+}
+
+// readCappedHistory uses the caller's query/transaction for a pinned version.
+func readCappedHistory(ctx context.Context, q cappedQuery, id string, after int64, limit int) ([]CappedHistoryRecord, error) {
+	rows, err := q.Query(ctx, `SELECT sequence,payload,previous_sha256,state_sha256 FROM (
  (SELECT sequence,payload,'' AS previous_sha256,'' AS state_sha256 FROM mantik_capped_book_events WHERE book_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3)
  UNION ALL (SELECT sequence,payload,previous_sha256,state_sha256 FROM mantik_capped_book_history WHERE book_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3)
  ) history ORDER BY sequence LIMIT $3`, id, after, limit)

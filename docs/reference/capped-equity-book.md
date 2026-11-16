@@ -58,6 +58,29 @@ transaction. The head's SHA-256 must match the immutable transition receipt;
 source records reject updates, deletes and truncation. Memory and SQL stores
 expose the same command contract.
 
+A matching stored hash is not proof of a valid transition. Operational SQL
+reads reconstruct the pinned head from the immutable configuration and original
+commands, checking each command, previous-state hash and resulting-state hash
+against actual `account.ApplyCappedCommand` output. A writer cannot turn an
+observation into authority to rewrite an earlier control or checkpoint by
+choosing matching receipt/head hashes.
+
+Each `Postgres` instance keeps a private, detached cache of verified replay
+prefixes. Cold reads and restarts warm it from bounded custody pages; later
+reads verify only the unseen suffix. A fully warm read still fetches the SQL
+head and checks its original version and hash, without scanning old history.
+Transaction-local replay never publishes uncommitted state into that cache.
+Normal writes publish their derived projection only after commit. Submission
+and write fences reread and validate the current head while holding the book
+row; a cached older prefix cannot authorize that newer head.
+
+Warmup can exceed a request deadline for a long archive. The request then fails
+closed, with no partial-state response or submission authority. Fully verified
+committed prefixes remain available to resume warmup on the next request;
+unverified transitions and partial legacy pages are discarded. After process
+restart, full source replay is required again. Allow for that recovery cost and
+retry warmup before expecting admission to become available.
+
 The hot replay projection remains capped at 4,096 slots. Continuous safety
 monitoring folds only consecutive trailing `risk_observe` commands into an
 internal checkpoint and the latest observation. Every original command remains

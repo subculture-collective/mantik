@@ -16,6 +16,7 @@ import (
 )
 
 type Postgres struct {
+	cappedReplay           cappedReplayCache
 	pool                   *pgxpool.Pool
 	qualificationEvaluator QualificationEvaluator
 	portfolioEvaluator     PaperPortfolioEvaluator
