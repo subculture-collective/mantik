@@ -85,6 +85,40 @@ func TestCapitalSnapshotDerivesEveryRecipeAndReservesItsFractionalBasket(t *test
 	}
 }
 
+func TestCapitalSnapshotChecksJointBoundaryWithIdleTrend(t *testing.T) {
+	s := testSnapshot()
+	for _, a := range s.Assets {
+		if a.Class != "etf" {
+			continue
+		}
+		bars := s.Bars[a.ID]
+		// Equal endpoint prices cancel every trend signal while the intervening
+		// prices retain nonzero volatility and the stock recipes remain active.
+		for _, lag := range []int{0, 21, 63, 252} {
+			b := &bars[len(bars)-1-lag]
+			b.Open, b.High, b.Low, b.Close = "100", "100", "100", "100"
+		}
+	}
+	r, err := evaluate(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Results[0].Kind != library.Trend || len(r.Results[0].Decision.Targets) != 0 || r.Results[0].Capital.Status != "no_trade" {
+		t.Fatal("expected an idle trend recipe", r.Results[0])
+	}
+	expectedOrders := 0
+	for _, v := range r.Results[1:] {
+		if len(v.Decision.Targets) == 0 {
+			t.Fatal("expected an active stock recipe", v)
+		}
+		expectedOrders += len(v.Decision.Targets)
+	}
+	joint := r.JointPortfolio
+	if joint.Status != "minimum_at_frozen_snapshot" || joint.WholeBookEquity == "" || len(joint.Reserved.Pending) != expectedOrders || len(joint.Distribution.Sleeves) != 4 {
+		t.Fatal("joint boundary must reserve every active target and retain the idle sleeve", joint)
+	}
+}
+
 func TestCapitalSnapshotRefusesMissingScopeAndWarmup(t *testing.T) {
 	for name, change := range map[string]func(*snapshot){
 		"membership":             func(s *snapshot) { s.Universe.Members = s.Universe.Members[:4] },

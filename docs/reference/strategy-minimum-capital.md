@@ -47,6 +47,8 @@ or a proof that no larger balance can work.
 `WholeBookEquity` and the subject's sleeve budget are separate fields. The
 report includes one independently funded cold-start case per recipe and an
 additional joint four-sleeve case. Neither is the owner's operational book.
+The joint case selects an active recipe as its subject and retains idle sleeves
+in the allocation roster, so one idle recipe cannot suppress the other baskets.
 The synthetic financial books receive no deposits, gate authority or
 qualification credit. All outputs are `snapshot_financial_diagnostic_unqualified`.
 

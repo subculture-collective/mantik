@@ -247,7 +247,16 @@ func evaluate(ctx context.Context, s snapshot) (report, error) {
 			return out, err
 		}
 	}
-	out.JointPortfolio, err = backtest.StrategyMinimum(ctx, account.Margin, req, s.Marks, out.Results[0].Kind, s.MaximumCents)
+	// An idle subject reports no_trade before searching the roster. Select an
+	// active recipe for the joint check while retaining every sleeve's budget.
+	jointSubject := out.Results[0].Kind
+	for _, result := range out.Results {
+		if len(result.Decision.Targets) > 0 {
+			jointSubject = result.Kind
+			break
+		}
+	}
+	out.JointPortfolio, err = backtest.StrategyMinimum(ctx, account.Margin, req, s.Marks, jointSubject, s.MaximumCents)
 	if err != nil {
 		return out, err
 	}
