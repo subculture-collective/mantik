@@ -106,7 +106,7 @@ func bookFillAttributionStorageContract(t *testing.T, s CappedBookStore) {
 		t.Fatal(err)
 	}
 	order := account.BookOrder{ID: "fractional-buy", Symbol: "SPY", Quantity: "0.125", Limit: "100", Fee: "0.02", Side: "buy", At: at}
-	fill := account.BookFill{ID: "fractional-activity", OrderID: order.ID, VenueOrderID: "venue", Symbol: order.Symbol, Quantity: order.Quantity, Price: "100", Fee: "0.01", Side: order.Side, SourceSHA256: strings.Repeat("a", 64), At: at.Add(time.Second)}
+	fill := account.BookFill{ID: strings.Repeat("a", 119) + ":activity", OrderID: order.ID, VenueOrderID: "venue", Symbol: order.Symbol, Quantity: order.Quantity, Price: "100", Fee: "0.01", Side: order.Side, SourceSHA256: strings.Repeat("a", 64), At: at.Add(time.Second)}
 	commands := []account.BookCommand{
 		{ID: order.ID, Kind: "reserve", At: at, Order: &order, Marks: map[string]string{"SPY": "100"}},
 		{ID: "bind", Kind: "bind", At: at, OrderID: order.ID, VenueOrderID: fill.VenueOrderID},

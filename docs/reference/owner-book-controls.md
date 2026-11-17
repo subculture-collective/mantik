@@ -45,6 +45,8 @@ owned client/venue order, symbol, side, fractional quantity, price, fee and raw
 source hash. The original fill clock and local recording clock stay separate;
 rows are displayed in economic-clock order. Allocation, sleeve and strategy
 identities come from the retained order, when that order has those identities.
+Broker activity IDs retain the journal's nonempty, at-most-128-byte contract;
+punctuation and longer IDs are preserved and escaped for terminal output.
 
 Each row shows gross quantity times price and its signed cash movement: a buy
 debits gross plus fee, while a sell credits gross less fee. Exact decimal

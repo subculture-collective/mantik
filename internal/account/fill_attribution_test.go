@@ -60,12 +60,14 @@ func TestBookFillAttributionFractionalCashAndOriginalClocks(t *testing.T) {
 		t.Fatal("readback changed journal", err)
 	}
 	for name, change := range map[string]func(*BookExecutionAttribution){
-		"gross":     func(e *BookExecutionAttribution) { e.Fills[0].Gross = "12" },
-		"fee":       func(e *BookExecutionAttribution) { e.Fills[0].Fill.Fee = "0" },
-		"quantity":  func(e *BookExecutionAttribution) { e.Fills[0].Fill.Quantity = "1" },
-		"duplicate": func(e *BookExecutionAttribution) { e.Fills = append(e.Fills, e.Fills[1]) },
-		"cash":      func(e *BookExecutionAttribution) { e.ReconciledCash = "2000" },
-		"clock":     func(e *BookExecutionAttribution) { e.Fills[0].RecordedAt = at },
+		"gross":             func(e *BookExecutionAttribution) { e.Fills[0].Gross = "12" },
+		"fee":               func(e *BookExecutionAttribution) { e.Fills[0].Fill.Fee = "0" },
+		"quantity":          func(e *BookExecutionAttribution) { e.Fills[0].Fill.Quantity = "1" },
+		"duplicate":         func(e *BookExecutionAttribution) { e.Fills = append(e.Fills, e.Fills[1]) },
+		"cash":              func(e *BookExecutionAttribution) { e.ReconciledCash = "2000" },
+		"clock":             func(e *BookExecutionAttribution) { e.Fills[0].RecordedAt = at },
+		"missing activity":  func(e *BookExecutionAttribution) { e.Fills[0].Fill.ID = "" },
+		"overlong activity": func(e *BookExecutionAttribution) { e.Fills[0].Fill.ID = strings.Repeat("a", 129) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw, marshalErr := json.Marshal(e)
@@ -79,6 +81,38 @@ func TestBookFillAttributionFractionalCashAndOriginalClocks(t *testing.T) {
 			change(&bad)
 			if bad.Validate(v.Cash) == nil {
 				t.Fatal("inconsistent readback accepted")
+			}
+		})
+	}
+}
+
+func TestBookFillAttributionUsesOriginalActivityIDContract(t *testing.T) {
+	for name, activity := range map[string]string{
+		"punctuation":       "activity:123",
+		"maximum length":    strings.Repeat("a", 128),
+		"terminal controls": "activity:\x1b[31m\noriginal",
+	} {
+		t.Run(name, func(t *testing.T) {
+			at := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
+			s, err := NewCappedState(DefaultCappedConfig("activity-ids", "broker", Cash, at))
+			if err != nil {
+				t.Fatal(err)
+			}
+			order := BookOrder{ID: "local-order", Symbol: "SPY", Quantity: "0.125", Limit: "100", Fee: "0.02", Side: "buy", At: at}
+			fill := BookFill{ID: activity, OrderID: order.ID, VenueOrderID: "venue", Symbol: "SPY", Quantity: order.Quantity, Price: "100", Fee: "0.01", Side: "buy", SourceSHA256: strings.Repeat("a", 64), At: at.Add(time.Second)}
+			for _, c := range []BookCommand{
+				{ID: order.ID, Kind: "reserve", At: at, Order: &order, Marks: map[string]string{"SPY": "100"}},
+				{ID: "bind", Kind: "bind", At: at, OrderID: order.ID, VenueOrderID: "venue"},
+				{ID: fill.ID, Kind: "fill", At: at.Add(2 * time.Second), Fill: &fill, Marks: map[string]string{"SPY": "100"}},
+			} {
+				s, err = ApplyCappedCommand(s, c)
+				if err != nil {
+					t.Fatal("valid original activity was refused by the journal", err)
+				}
+			}
+			v, err := ReadOwnerBook(s, at.Add(3*time.Second))
+			if err != nil || v.Execution == nil || v.Execution.Validate(v.Cash) != nil || v.Execution.Fills[0].Fill.ID != activity {
+				t.Fatal("attribution rejected or rewrote a valid retained activity ID", err)
 			}
 		})
 	}

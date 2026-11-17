@@ -51,7 +51,9 @@ func (e BookExecutionAttribution) Validate(cash string) error {
 		q, qe := bookRat(f.Quantity)
 		p, pe := bookRat(f.Price)
 		fee, fe := bookRat(f.Fee)
-		if !bookID.MatchString(f.ID) || !bookID.MatchString(f.OrderID) || f.VenueOrderID == "" || !bookSymbol.MatchString(f.Symbol) || !hashText.MatchString(f.SourceSHA256) || f.At.IsZero() || f.At.Before(previous) || x.RecordedAt.Before(f.At) || seen[f.ID] || qe != nil || pe != nil || fe != nil || q.Sign() <= 0 || p.Sign() <= 0 || f.Side != "buy" && f.Side != "sell" {
+		// Activity IDs retain the journal's nonempty <=128-byte contract;
+		// only locally generated order IDs use the narrower bookID pattern.
+		if f.ID == "" || len(f.ID) > 128 || !bookID.MatchString(f.OrderID) || f.VenueOrderID == "" || !bookSymbol.MatchString(f.Symbol) || !hashText.MatchString(f.SourceSHA256) || f.At.IsZero() || f.At.Before(previous) || x.RecordedAt.Before(f.At) || seen[f.ID] || qe != nil || pe != nil || fe != nil || q.Sign() <= 0 || p.Sign() <= 0 || f.Side != "buy" && f.Side != "sell" {
 			return invalid
 		}
 		seen[f.ID], previous = true, f.At
