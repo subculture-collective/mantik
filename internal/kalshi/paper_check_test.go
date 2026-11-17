@@ -94,3 +94,25 @@ func TestWeatherPaperRejectsLateForecastTamperingAndWrongOutcomes(t *testing.T) 
 		t.Fatal("invented qualification class")
 	}
 }
+
+func TestWeatherPaperRequiresTheDiagnosticContractToFill(t *testing.T) {
+	for _, kind := range []string{"uncrossed_limit", "empty_depth"} {
+		t.Run(kind, func(t *testing.T) {
+			input := paperFixture(t)
+			if kind == "uncrossed_limit" {
+				input.Order.Limit = "0.10"
+			} else {
+				raw := `{"yes_dollars":[["0.55","8"]],"no_dollars":[]}`
+				input.Books[0].Book = json.RawMessage(raw)
+				input.Books[0].Original = `{"orderbook_fp":` + raw + `}`
+				input.Books[0].SHA256 = simHash(input.Books[0].Original)
+			}
+			result := officialResult(input.Order.At.Add(25*time.Hour), true)
+			for _, outcome := range []*storage.KalshiWeatherSettlement{nil, &result} {
+				if _, err := CheckWeatherPaper(context.Background(), input, outcome, "synthetic_fixture"); err == nil || err.Error() != "diagnostic_requires_one_filled_contract" {
+					t.Fatal("unfilled diagnostic did not fail at the fill acceptance boundary", err)
+				}
+			}
+		})
+	}
+}

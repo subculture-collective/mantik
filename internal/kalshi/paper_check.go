@@ -69,8 +69,12 @@ func CheckWeatherPaper(ctx context.Context, input PaperCheckInput, settlement *s
 	if out.Maker.Intent != nil {
 		return out, errors.New("diagnostic cannot replace a calibrated maker intent")
 	}
-	if _, err = book.Execute(ctx, store, input.Order, input.ExecuteAt, input.Event); err != nil {
+	fills, err := book.Execute(ctx, store, input.Order, input.ExecuteAt, input.Event)
+	if err != nil {
 		return out, err
+	}
+	if len(fills) != 1 || fills[0].Contracts != 1 {
+		return out, errors.New("diagnostic_requires_one_filled_contract")
 	}
 	at := input.ExecuteAt
 	if settlement != nil {

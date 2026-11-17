@@ -18,6 +18,9 @@ or evidence threshold is lowered to manufacture a strategy trade.
   responses are fsynced before parsing. The forecast is retained before close,
   the operator order clock follows that receipt and event-fee capture, and the
   modeled taker execution consumes a strictly later actual book capture.
+  Exactly one contract must fill; an uncrossed limit or empty executable depth
+  returns `diagnostic_requires_one_filled_contract` and cannot produce an
+  accepted opening or completed settlement report.
 - The immutable `input.json` includes the complete original forecast receipt,
   normalized/raw market and order-book records, series/event fee evidence,
   order and execution clock. It is bounded to 8 MiB. Forecast content IDs
