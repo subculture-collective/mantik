@@ -62,7 +62,7 @@ They carry `prospective_market_unqualified`, `QualificationCredit: false`, and
 One settled forecast measures one result; it cannot satisfy a 20-sample bucket
 or qualify the model.
 
-## November 16, 2026 check: pending settlement
+## November 16, 2026 check: settled November 18, scored November 27
 
 The retained contract is `KXHIGHCHI-26NOV17-B57.5`. The actual pre-close forecast
 was retained at 01:01:36 UTC on November 17 (November 16 in Chicago). A separate
@@ -79,11 +79,20 @@ owned loopback-only container is stopped with its volume and dump retained.
 
 Kalshi's captured close is November 18 at 07:00 UTC (01:00 Chicago); expected
 expiration is November 18 at 20:00 UTC (14:00 Chicago), with a later possible
-maximum. Official final settlement remains **unobserved**. #56 must remain
-open until the separate payout/inventory and canonical calibration readbacks
-are actually observed. The first development attempt exposed JSON indentation
+maximum. The first development attempt exposed JSON indentation
 changing a forecast's content ID; that failed attempt remains retained and
 supplies no accepted fill or calibration credit.
+
+Kalshi finalized the market as **YES** at 13:06:54 UTC on November 18
+(settlement value $1.00). The settlement ran on November 27 because the
+scheduled November 18 run did not start; it used the same sealed input and
+database and made no new forecast or order. The book now holds $100.2562 cash
+after a $1.00 payout, with no inventory or maker reservation. Local and
+canonical calibration agree: one settled, none pending, Brier 0.6766 (the
+forecast gave the bracket 17.7%). A repeated settle, offline replay and SQL
+readback added no payout, settlement row or capture. Evidence is in
+`/home/onnwee/.local/state/mantik-epic56-settle-20261127/`. This is one
+diagnostic taker result, not a maker fill, accuracy measure or qualification.
 
 Retained root:
 `/home/onnwee/.local/state/mantik-epic51-56-20261116/weather-chi-nov17-v2/`.
