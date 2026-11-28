@@ -72,9 +72,10 @@ returns the structured view. Mutations require `--action-id` and the explicit
 `--expected-version` read and approved by the owner. Strategy controls also
 require a retained `--strategy-id`. `--preview` prints the exact terms and their
 `confirm-` SHA-256 pin without sending a mutation. Without `--confirm`, the CLI
-requires that exact pin followed by Enter. EOF, an incomplete line, `yes`, a
-wrong pin, cancelled context or failed input cancels. Automation must supply
-the exact printed pin through `--confirm`; there is no default yes.
+prints the same terms and asks `Send this action? [y/N]`. Only `y` or `yes`
+followed by Enter sends. Anything else, EOF, an answer without a newline, a
+cancelled context or failed input cancels; the default is no. Automation must
+supply the exact printed pin through `--confirm`.
 
 The pin covers book, action ID, version and every action term. It proves
 concrete intent only; bearer authentication is still mandatory. The service
@@ -88,14 +89,19 @@ The response separates the original `AppliedVersion` receipt from `Current`.
 The service reloads after applying, and the CLI independently GETs again before
 printing authoritative current state. A later protective halt is shown even
 when retrying a previously successful clear. No readback guarantees state will
-not change after that read. A lost response is an unknown outcome: inspect and
-retry identical terms, never invent another ID to overcome uncertainty. Failed
+not change after that read. A 4xx refusal records nothing, and the CLI says so.
+A 409 means the book changed since the expected version, or the action ID
+already holds different terms: read the book and confirm a new action. A lost
+response, transport failure or 5xx is an unknown outcome: inspect and retry
+identical terms, never invent another ID to overcome uncertainty. Failed
 post-action GET says the action was recorded but current readback is unavailable.
 
 Hard-halt clear refreshes risk from complete current local marks and requires
 positive observed equity, then explicitly resets the loss baseline. It does
 not remove permanent retirement, kill or reduce-only controls. Resume cannot
-undo retirement. New protective observations can halt again. Retire is permanent
+undo retirement: the service refuses a new resume of a retired strategy (422)
+and records nothing. A paused sleeve shows `CURRENT REFUSAL strategy_paused`;
+its admission code remains `risk_strategy_breaker`. New protective observations can halt again. Retire is permanent
 for that strategy version; it does not imply immediate liquidation.
 
 ## Real deposits
@@ -140,25 +146,26 @@ with `FundingMode: "owner_receipts"`,
 uses a local fake owner credential and loopback service, and destroys it when the
 test exits. It does not read development databases, contact brokers/models or
 record a real cash receipt. Its receipt text is explicitly a fixture. It shows
-the initial hard halt, requires a concrete pin plus Enter to clear, retries the
+the initial hard halt, requires `y` plus Enter to clear, retries the
 same action, independently reads back, and records one fixture receipt. Pause,
 retire, refusal rendering and concurrent readback have separate focused tests.
 
 ```sh
 GOFLAGS=-p=2 GOMAXPROCS=2 mise exec -- go test ./internal/cli -run '^TestOwnerBookTerminalWalkthrough$' -v -count=1
-GOFLAGS=-p=2 GOMAXPROCS=2 mise exec -- go test ./internal/cli -run '^TestOwnerBook(PauseRetireTerminalAndConcurrentReadback|CancellationNeverSendsMutation|AuthOriginAndRedirectBoundary|FailedReadbackDoesNotClaimSuccess)$' -v -count=1
+GOFLAGS=-p=2 GOMAXPROCS=2 mise exec -- go test ./internal/cli -run '^TestOwnerBook(PauseRetireTerminalAndConcurrentReadback|CancellationNeverSendsMutation|AuthOriginAndRedirectBoundary|FailedReadbackDoesNotClaimSuccess|RefusalSaysWhetherAnythingWasRecorded|PausedSleeveLabel)$' -v -count=1
 GOFLAGS=-p=2 GOMAXPROCS=2 mise exec -- go test ./internal/service -run '^TestOwnerBook(VersionFenceAndPermanentRetirement|ClearReadbackShowsConcurrentRehalt|MissingValuationKeepsControlsVisibleAndRefusesClear)$' -v -count=1
 ```
 
-The owner's actual terminal walkthrough remains **outstanding**. On a separately
-prepared isolated service/book, the owner should inspect `book --id` for their
-chosen test book, use the displayed strategy identity and version, preview and
-confirm pause, reread, retire and reread, then confirm clear and inspect the
-current halt state. Try EOF and a stale version to confirm refusal. A deposit
-walkthrough must use fixture receipt evidence only in that isolated test book;
-a real-book receipt must correspond to real received cash. Confirm that the
-wording and workflow fit the owner's use. Automated agent tests do not establish
-that the owner has performed or accepted this checkpoint.
+The owner performed the terminal walkthrough on November 28, 2026. It ran
+against an isolated in-memory service holding a fixture strategy book and a
+receipt-mode book, with fixture receipt text only. The owner previewed and
+confirmed pause, retire, halt-clear and one fixture deposit, cancelled at the
+prompt with EOF, and repeated a retire and a clear exactly. A stale version was
+refused with 409. The owner asked for four changes, which this document now
+describes: a yes/no prompt instead of typing the pin, refusing resume of a
+retired strategy, the `strategy_paused` label, and refusal messages that say
+whether anything was recorded. A real-book receipt must still correspond to
+real received cash.
 
 ## HTTP contract and integration boundaries
 
@@ -189,8 +196,7 @@ prefix, and exact retries return the original logical applied version alongside
 current controls. A newer halt therefore stays visible after retrying an older
 clear. A stale version under a new action ID requires a fresh confirmation.
 
-The human owner terminal walkthrough remains **UNPERFORMED**. Automated terminal,
-authentication, checkpoint and retry contracts do not complete that checkpoint.
+The owner performed the terminal walkthrough on November 28, 2026 (above).
 
 Bounded owner views use the same original-command verification as operational
 SQL reads. A head with publisher-chosen matching hashes cannot rewrite a prior

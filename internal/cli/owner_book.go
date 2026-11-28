@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -33,7 +34,7 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 	amount := fs.String("amount", "", "deposit only: actual received USD, fixed 500")
 	effective := fs.String("effective-at", "", "deposit only: actual cash receipt RFC3339 clock, never an assumed schedule time")
 	source := fs.String("source", "", "deposit only: non-secret receipt reference; stored permanently")
-	confirm := fs.String("confirm", "", "exact concrete confirmation pin printed by preview; never yes")
+	confirm := fs.String("confirm", "", "non-interactive: exact confirmation pin printed by preview; never yes")
 	preview := fs.Bool("preview", false, "print exact terms and confirmation pin without sending a mutation")
 	format := fs.String("format", "terminal", "terminal or json")
 	if err := fs.Parse(args); err != nil {
@@ -87,16 +88,17 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 		return nil
 	}
 	if *confirm == "" {
-		if _, err = fmt.Fprintln(out, "Type the exact Confirmation pin above, then Enter (EOF cancels):"); err != nil {
+		if _, err = fmt.Fprint(out, "Send this action? [y/N] "); err != nil {
 			return err
 		}
-		// ReadString deliberately rejects even a complete pin without a newline at
-		// EOF. No default yes, partial input or failed reader authorizes mutation.
+		// ReadString deliberately rejects an answer without a newline at EOF.
+		// The default is no: empty, partial or failed input never sends.
 		line, e := readOwnerConfirmation(ctx, in)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if e != nil || strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") != terms.Confirmation {
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if e != nil || answer != "y" && answer != "yes" {
 			return errors.New("owner action cancelled; no mutation sent")
 		}
 	} else if *confirm != terms.Confirmation {
@@ -107,6 +109,13 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 	}
 	var receipt service.OwnerBookReceipt
 	if err = ownerBookRequest(ctx, *base, path+"/owner-controls/"+*id, terms, &receipt); err != nil {
+		var refused *ownerRefusal
+		switch {
+		case errors.As(err, &refused) && refused.status == http.StatusConflict:
+			return errors.New("owner service refused the action (HTTP 409): the book changed since that version, or this action ID already holds different terms; nothing was recorded. Read the book and confirm a new action")
+		case errors.As(err, &refused) && refused.status < 500:
+			return fmt.Errorf("%w; nothing was recorded", err)
+		}
 		return fmt.Errorf("%w; outcome may be unknown: retry the identical action ID, version and terms, then read book", err)
 	}
 	if receipt.ActionID != *id || receipt.AppliedVersion != *version+1 || receipt.Current.Config.ID != *book || receipt.Current.Version < receipt.AppliedVersion {
@@ -125,6 +134,14 @@ func runOwnerBook(ctx context.Context, args []string, in io.Reader, out, errOut 
 		return err
 	}
 	return outputOwnerBook(out, v, *format)
+}
+
+// ownerRefusal is a sanitized HTTP refusal. Its status distinguishes a
+// definite 4xx refusal from a server failure whose outcome is unknown.
+type ownerRefusal struct{ status int }
+
+func (e *ownerRefusal) Error() string {
+	return fmt.Sprintf("owner service refused request (HTTP %d)", e.status)
 }
 
 func readOwnerConfirmation(ctx context.Context, in io.Reader) (string, error) {
@@ -162,7 +179,7 @@ func ownerBookRequest(ctx context.Context, base, path string, input, output any)
 	}
 	var failure *httpFailure
 	if errors.As(err, &failure) {
-		return fmt.Errorf("owner service refused request (HTTP %d)", failure.Status)
+		return &ownerRefusal{status: failure.Status}
 	}
 	return errors.New("owner service request or bounded readback failed")
 }
@@ -219,7 +236,7 @@ func outputOwnerBook(out io.Writer, v account.OwnerBookView, format string) erro
 		fmt.Fprintf(&b, "sleeve=%q strategy=%q stage=%q paused=%t permanently_retired=%t\n", s.Sleeve.ID, s.Sleeve.StrategyID, s.Sleeve.Stage, s.Paused, s.Retired)
 		fmt.Fprintf(&b, "  gate=%q model_driven=%t\n", s.Sleeve.GateID, s.Sleeve.ModelDriven)
 		if s.Paused {
-			fmt.Fprintln(&b, "  CURRENT REFUSAL risk_strategy_breaker")
+			fmt.Fprintln(&b, "  CURRENT REFUSAL strategy_paused (admission code risk_strategy_breaker)")
 		}
 		if s.Retired {
 			fmt.Fprintln(&b, "  CURRENT REFUSAL risk_strategy_retired")
