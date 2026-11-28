@@ -137,6 +137,19 @@ func applyOwnerBookAction(ctx context.Context, s storage.CappedBookStore, book, 
 			if !found {
 				return OwnerBookReceipt{}, errors.New("strategy is not retained by this book")
 			}
+			if in.Action == "resume_strategy" {
+				// Retirement is permanent. Recording a resume would read as success
+				// while the strategy still cannot trade, so refuse it instead.
+				view, e := account.ReadOwnerBook(b, at)
+				if e != nil {
+					return OwnerBookReceipt{}, e
+				}
+				for _, sleeve := range view.Sleeves {
+					if sleeve.Sleeve.StrategyID == in.StrategyID && sleeve.Retired {
+						return OwnerBookReceipt{}, errors.New("strategy is permanently retired; resume cannot apply")
+					}
+				}
+			}
 		}
 		cmd = &c
 		applied = b.Version + 1

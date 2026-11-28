@@ -21,7 +21,7 @@ type ownerConfirmationPrompt struct {
 }
 
 func (w *ownerConfirmationPrompt) Write(p []byte) (int, error) {
-	if strings.Contains(string(p), "Type the exact Confirmation pin") {
+	if strings.Contains(string(p), "Send this action? [y/N]") {
 		w.once.Do(func() { close(w.ready) })
 	}
 	return len(p), nil

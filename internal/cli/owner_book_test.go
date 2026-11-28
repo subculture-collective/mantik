@@ -49,7 +49,7 @@ func TestOwnerBookTerminalWalkthrough(t *testing.T) {
 	clear := account.OwnerBookAction{ExpectedVersion: b.Version, Action: "owner_clear_halt"}
 	clear.Confirmation = clear.ConfirmationPin(cfg.ID, "owner-clear-1")
 	args := []string{"--action", clear.Action, "--action-id", "owner-clear-1", "--expected-version", "1"}
-	if _, err = run(args, clear.Confirmation+"\n"); err != nil {
+	if _, err = run(args, "y\n"); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := run(append(args, "--confirm", clear.Confirmation), ""); err != nil || !strings.Contains(out, "applied_version=2") || !strings.Contains(out, "halted=false") {
@@ -140,8 +140,10 @@ func TestOwnerBookCancellationNeverSendsMutation(t *testing.T) {
 		wantError   bool
 	}{
 		{name: "EOF", wantError: true},
-		{name: "pin-at-EOF", input: pin, wantError: true},
-		{name: "yes", input: "yes\n", wantError: true},
+		{name: "yes-at-EOF", input: "yes", wantError: true},
+		{name: "empty", input: "\n", wantError: true},
+		{name: "no", input: "n\n", wantError: true},
+		{name: "pin-is-not-yes", input: pin + "\n", wantError: true},
 		{name: "incorrect-pin", extra: []string{"--confirm", "yes"}, wantError: true},
 		{name: "preview", extra: []string{"--preview"}},
 	} {
@@ -187,7 +189,7 @@ func TestOwnerBookPauseRetireTerminalAndConcurrentReadback(t *testing.T) {
 			})))
 			defer server.Close()
 			var out, errOut bytes.Buffer
-			err := runOwnerBook(context.Background(), []string{"--api-url", server.URL, "--id", "book", "--action", action, "--strategy-id", a.StrategyID, "--action-id", action, "--expected-version", "4"}, strings.NewReader(a.Confirmation+"\n"), &out, &errOut)
+			err := runOwnerBook(context.Background(), []string{"--api-url", server.URL, "--id", "book", "--action", action, "--strategy-id", a.StrategyID, "--action-id", action, "--expected-version", "4"}, strings.NewReader("yes\n"), &out, &errOut)
 			if err != nil || !strings.Contains(out.String(), "version=6") || !strings.Contains(out.String(), "halted=true") || !strings.Contains(out.String(), "pending_orders") || !strings.Contains(out.String(), "Equity=UNAVAILABLE") {
 				t.Fatal(out.String(), err)
 			}
@@ -245,6 +247,36 @@ func TestOwnerBookFailedReadbackDoesNotClaimSuccess(t *testing.T) {
 	var out, errOut bytes.Buffer
 	err := runOwnerBook(context.Background(), []string{"--api-url", server.URL, "--id", "book", "--action", a.Action, "--action-id", "clear", "--expected-version", "0", "--confirm", a.Confirmation}, strings.NewReader(""), &out, &errOut)
 	if err == nil || !strings.Contains(err.Error(), "action recorded at version 1; current readback unavailable") || strings.Contains(out.String(), "authoritative current readback follows") || errors.Is(err, context.Canceled) {
+		t.Fatal(out.String(), err)
+	}
+}
+
+func TestOwnerBookRefusalSaysWhetherAnythingWasRecorded(t *testing.T) {
+	t.Setenv("MANTIK_API_TOKEN", "test-owner")
+	a := account.OwnerBookAction{Action: "pause_strategy", StrategyID: "strategy-1", ExpectedVersion: 5}
+	pin := a.ConfirmationPin("book", "pause-1")
+	for status, want := range map[int]string{
+		http.StatusConflict:            "nothing was recorded. Read the book and confirm a new action",
+		http.StatusUnprocessableEntity: "(HTTP 422); nothing was recorded",
+		http.StatusInternalServerError: "outcome may be unknown",
+	} {
+		server := httptest.NewServer(loopbacktest.GoClientOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "refused", status)
+		})))
+		var out, errOut bytes.Buffer
+		err := runOwnerBook(context.Background(), []string{"--api-url", server.URL, "--id", "book", "--action", a.Action, "--strategy-id", a.StrategyID, "--action-id", "pause-1", "--expected-version", "5", "--confirm", pin}, strings.NewReader(""), &out, &errOut)
+		server.Close()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatal(status, err)
+		}
+	}
+}
+
+func TestOwnerBookPausedSleeveLabel(t *testing.T) {
+	at := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
+	v := account.OwnerBookView{Config: account.DefaultCappedConfig("book", "account", account.Cash, at), AsOf: at, Equity: "2000", Sleeves: []account.OwnerSleeveView{{Sleeve: allocation.Sleeve{ID: "trend", StrategyID: "strategy-1", Stage: "incubation"}, Paused: true}}}
+	var out bytes.Buffer
+	if err := outputOwnerBook(&out, v, "terminal"); err != nil || !strings.Contains(out.String(), "CURRENT REFUSAL strategy_paused (admission code risk_strategy_breaker)") {
 		t.Fatal(out.String(), err)
 	}
 }

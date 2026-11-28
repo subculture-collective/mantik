@@ -193,6 +193,14 @@ func TestOwnerBookVersionFenceAndPermanentRetirement(t *testing.T) {
 		}
 		a.Confirmation = a.ConfirmationPin(r.BookID, id)
 		got, err := applyOwnerBookAction(ctx, s, r.BookID, id, a, at)
+		if action == "resume_strategy" {
+			// Resume cannot undo retirement, so it is refused and records nothing.
+			after, _ := s.CappedBook(ctx, r.BookID)
+			if err == nil || !strings.Contains(err.Error(), "permanently retired") || after.Version != b.Version {
+				t.Fatal("resume of retired strategy was recorded", err, after.Version, b.Version)
+			}
+			continue
+		}
 		if err != nil || !got.Current.Sleeves[0].Retired {
 			t.Fatal(got, err)
 		}
